@@ -56,6 +56,7 @@ export function GameCanvas({ matchRef, inputRef, frozen, onHud, onFinished }: Pr
 
     const frame = (now: number) => {
       const m = matchRef.current;
+      if (import.meta.env.DEV) (window as unknown as { __match?: Match }).__match = m;
       if (m !== currentMatch) {
         currentMatch = m;
         finishedSent = false;
