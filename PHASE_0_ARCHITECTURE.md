@@ -1,51 +1,34 @@
-# Audit et architecture — Phase 0
+# Audit et architecture du moteur
 
-## Audit du dépôt avant cette phase
+## Base Phase 0 — audit historique
 
-### `src/game/engine.ts`
+La Phase 0 avait isolé le terrain, les entités, le déplacement, le ballon, la possession, la caméra et le rendu Canvas dans `src/game/engine.ts`. `src/App.tsx` gardait l’interface, les entrées et la boucle fixe de `1/120 s`. Cette base a été conservée pour le gameplay : l’architecture n’a pas été remplacée.
 
-Le moteur précédent concentrait dans une seule classe les coordonnées du terrain, l’état des joueurs et du ballon, la boucle de match, la gestion des entrées, les tactiques IA, les tirs, les deux gardiens, les buts, les pickups, les combos, les particules et tout le dessin Canvas. Les responsabilités s’étaient accumulées au fil des fonctionnalités et le HUD dépendait de cet état d’arcade (chrono, jauge de tir, stamina, effets). C’était une mauvaise base pour ajouter progressivement les systèmes d’un match.
+Le premier audit avait également relevé que l’ancien prototype historique mélangeait gameplay et systèmes d’arcade (chrono, stamina, combos, bonus, effets et nombreuses mécaniques d’IA). Ces systèmes ne font pas partie du moteur actuel.
 
-### `src/App.tsx`
+## Architecture conservée
 
-Le composant gérait correctement l’interface React, les touches, le joystick tactile et une simulation à pas fixe de `1/120 s`. En revanche, il connaissait les anciens concepts de gameplay (tir, dash, difficulté, records, combos et bonus), ce qui le liait fortement au moteur et rendait un changement de modèle coûteux. Le Canvas conservait déjà un viewport fixe avec gestion du DPR.
+- **Interface et entrées** : React, clavier, joystick tactile, pause/reprise et HUD dans `src/App.tsx`.
+- **Simulation** : `Game.update(dt, input)` orchestre les systèmes à pas fixe ; les déplacements, timers et frictions utilisent `dt`, sans dépendance au nombre d’images par seconde.
+- **Coordonnées et rendu** : monde `800 × 1200`, viewport `480 × 720`, Canvas 2D et caméra lissée/clampée. Les effets de but sont dessinés dans le monde après la transformation caméra.
+- **Entités** : structures séparées `FootballPlayer`, `Goalkeeper` et `FootballBall`; quatre joueurs de champ et un gardien visuel par équipe.
+- **Audio** : sons Web Audio optionnels dans `src/game/sfx.ts`; l’absence d’audio ne bloque pas la simulation.
 
-### Audio et présentation
+## Systèmes de gameplay ajoutés
 
-- `src/game/sfx.ts` synthétisait plusieurs sons d’arcade par Web Audio, notamment du bruit et des temporisations. Il utilisait aussi un cast `any` pour la compatibilité audio ancienne.
-- `src/index.css` est volontairement minimal et Tailwind est chargé par Vite.
-- `src/main.tsx` ne fait que monter React en `StrictMode` : aucune logique de jeu n’y est mélangée.
-- `src/utils/cn.ts` est un utilitaire de classes générique et n’est pas utilisé par l’écran de jeu actuel.
-- `vite.config.ts` configure React, Tailwind, le build single-file et l’hôte de l’aperçu ; ces éléments ne sont pas spécifiques au gameplay.
+- **Contrôle du ballon** : le joueur propriétaire est le joueur actif. Le dribble maintient le ballon dans une zone devant/sur le côté, avec un léger retard contrôlé à la course. Les récupérations appliquent un verrou court contre les changements de propriétaire répétés.
+- **Passe** : une pression courte sélectionne un partenaire par direction visée, angle, distance, progression, espace libre et couloir d’adversaires. Le ballon est légèrement dirigé vers la trajectoire anticipée du destinataire.
+- **Réception** : la cible de passe devient le joueur actif, se déplace vers une interception prédite et récupère le ballon lorsque celui-ci entre dans sa zone de contrôle. La possession est alors attribuée à son identifiant.
+- **Tir** : une pression maintenue charge la puissance; le joueur relâche pour tirer. La vitesse dépend de la charge, la visée est influencée par l’orientation et bénéficie d’une assistance proportionnée à la distance du but. Une plage de charge dédiée déclenche un tir parfait.
+- **Buts et relance** : le score augmente seulement lorsque le ballon franchit l’ouverture entre les poteaux. Un tir à côté rebondit sur la ligne de fond. Après un but, un pulse Canvas en coordonnées monde accompagne la remise en jeu par l’équipe adverse.
+- **Défense** : les adversaires se déplacent vers leurs formations, peuvent tacler et récupérer un ballon libre. Ils n’ont pas d’IA offensive complète.
 
-## Décisions de conservation / refactorisation
+## Responsabilités dans `Game`
 
-### Conservé
+`Game.update()` coordonne le déplacement du joueur actif, l’action passe/tir, le retour des autres joueurs à leur formation, les collisions, la physique du ballon, les récupérations, les buts, la caméra et le rendu. La sélection du joueur actif privilégie successivement le porteur home, le receveur d’une passe home en vol, puis le joueur home le plus proche du ballon.
 
-- React comme couche d’interface, séparée de la simulation.
-- Canvas 2D, viewport `480 × 720` et rendu haute densité.
-- Boucle fixe avec accumulateur et `dt` en secondes.
-- Clavier, joystick tactile, pause/reprise et feedback audio facultatif.
-- Vite, Tailwind, `main.tsx`, utilitaire `cn.ts` et réglage d’hôte de l’aperçu.
+Le ballon libre conserve la friction `Math.pow(0.5, dt)`. Les mouvements, timers et interpolations sont basés sur `dt`. Les boucles de collision et de sélection parcourent les tableaux existants sans construire de listes temporaires par frame.
 
-### Réécrit ou retiré de la base jouable
+## Limites volontaires
 
-- Le moteur monolithique a été réduit à des responsabilités explicites : contrôle du joueur, maintien des formations, limites, collisions, physique du ballon, possession, kickoff, caméra et dessin du monde.
-- Le HUD et les entrées React ne référencent plus le système de tir/charge, le dash, le chrono d’arcade, les vagues, les records, les combos ou les pickups.
-- Les comportements de pressing/dribble/passe de l’IA et le plongeon/parade/capture des gardiens ont été retirés pour cette phase ; les joueurs adverses restent en formation et les gardiens dans leur zone.
-- Les effets particules, textes flottants et animations de célébration ne sont pas utilisés dans la base minimale.
-- L’audio a été réduit à quelques tonalités optionnelles et ne bloque jamais la simulation.
-
-## Architecture maintenant en place
-
-- **État du match** : phase, score, possession et équipe qui reprend après un but dans `Game`.
-- **Coordonnées** : `W`/`H` pour le viewport ; `PITCH_W`/`PITCH_H` pour le monde.
-- **Entités** : `FootballPlayer`, `Goalkeeper` et `FootballBall` sont des structures distinctes ; chaque équipe de champ compte quatre joueurs et possède son gardien séparé.
-- **Contrôle** : le porteur home est sélectionné ; sinon `updateActivePlayer()` choisit le home le plus proche du ballon. La sélection est isolée pour pouvoir ajouter un changement manuel ultérieurement.
-- **Simulation** : `update()` orchestre les systèmes ; chaque déplacement et ralentissement dépend de `dt`. Les collisions de joueurs sont résolues sans créer de listes temporaires par frame.
-- **Caméra et rendu** : la caméra suit l’action avec interpolation et clamp. Le rendu applique la translation monde, dessine le terrain et les entités, puis restaure le contexte ; le HUD React reste attaché au viewport.
-- **Interface** : `App.tsx` gère uniquement les contrôles, le cycle React, le HUD de base et l’appel du moteur.
-
-## Limites volontaires de la Phase 0
-
-Il n’y a pas encore de passe, de tir, de commandes d’action, de tactique IA, de gardien réactif ni de durée de match. Le ballon peut être porté, se libérer sur un contact adverse, rouler et être récupéré ; une entrée dans un but met à jour le score et lance le kickoff de l’équipe adverse. Ces systèmes seront ajoutés séparément, une fois la base validée.
+Les formations restent simplifiées; il n’y a pas de stratégie offensive adverse, de gardien réactif, de chrono, de touches/corners, ni de règles complètes de match. Le gardien est présent au rendu mais n’intercepte pas encore les tirs. Ces limites ne changent pas les systèmes de déplacement, possession, passe, réception, tir, but et remise en jeu décrits ci-dessus.

@@ -34,6 +34,8 @@ export function playSfx(name: string) {
       case 'ui': tone(580, 0.055, 'sine', 0.055); break;
       case 'touch': tone(330, 0.06, 'triangle', 0.07); break;
       case 'tackle': tone(115, 0.12, 'square', 0.07); break;
+      case 'kick': tone(215, 0.075, 'triangle', 0.075); break;
+      case 'power': tone(520, 0.11, 'sawtooth', 0.07); break;
       case 'goal': tone(740, 0.16, 'triangle', 0.08); break;
       default: break;
     }
