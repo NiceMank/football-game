@@ -1,95 +1,167 @@
-// Lightweight procedural match cues built on Web Audio; no audio assets or heavy dependencies.
-let audioContext: AudioContext | null = null;
+// Procedural match audio on Web Audio: no assets. Everything fails silently when audio is unavailable.
+import type { SfxName } from './types';
 
-function getAudioContext() {
+let ctx: AudioContext | null = null;
+let master: GainNode | null = null;
+let noiseBuffer: AudioBuffer | null = null;
+let crowdGain: GainNode | null = null;
+let crowdFilter: BiquadFilterNode | null = null;
+let muted = false;
+
+function audio() {
   if (typeof window === 'undefined' || !window.AudioContext) return null;
-  if (!audioContext) audioContext = new window.AudioContext();
-  if (audioContext.state === 'suspended') void audioContext.resume().catch(() => undefined);
-  return audioContext;
+  if (!ctx) {
+    ctx = new window.AudioContext();
+    master = ctx.createGain();
+    master.gain.value = muted ? 0 : 0.9;
+    master.connect(ctx.destination);
+  }
+  if (ctx.state === 'suspended') void ctx.resume().catch(() => undefined);
+  return ctx;
+}
+
+function noise(c: AudioContext) {
+  if (!noiseBuffer) {
+    noiseBuffer = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
+    const d = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  return noiseBuffer;
 }
 
 export function unlockAudio() {
-  try { getAudioContext(); } catch { /* Audio is optional; gameplay must continue silently. */ }
-}
-
-function tone(startFrequency: number, endFrequency: number, duration: number, type: OscillatorType, volume: number, delay = 0) {
-  const context = getAudioContext();
-  if (!context) return;
-  const oscillator = context.createOscillator();
-  const gain = context.createGain();
-  const start = context.currentTime + delay;
-  const end = start + duration;
-  oscillator.type = type;
-  oscillator.frequency.setValueAtTime(Math.max(1, startFrequency), start);
-  if (Math.abs(startFrequency - endFrequency) > 1) {
-    oscillator.frequency.exponentialRampToValueAtTime(Math.max(1, endFrequency), end);
+  try {
+    const c = audio();
+    if (!c || crowdGain || !master) return;
+    // Continuous crowd bed: filtered noise whose level follows the match intensity.
+    const src = c.createBufferSource();
+    src.buffer = noise(c);
+    src.loop = true;
+    crowdFilter = c.createBiquadFilter();
+    crowdFilter.type = 'bandpass';
+    crowdFilter.frequency.value = 700;
+    crowdFilter.Q.value = 0.6;
+    crowdGain = c.createGain();
+    crowdGain.gain.value = 0;
+    src.connect(crowdFilter);
+    crowdFilter.connect(crowdGain);
+    crowdGain.connect(master);
+    src.start();
+  } catch {
+    /* audio is optional */
   }
-  gain.gain.setValueAtTime(0.0001, start);
-  gain.gain.linearRampToValueAtTime(volume, start + Math.min(0.012, duration * 0.22));
-  gain.gain.exponentialRampToValueAtTime(0.0001, end);
-  oscillator.connect(gain);
-  gain.connect(context.destination);
-  oscillator.start(start);
-  oscillator.stop(end + 0.012);
 }
 
-export function playSfx(name: string) {
+export function setMuted(value: boolean) {
+  muted = value;
+  if (master && ctx) master.gain.setTargetAtTime(value ? 0 : 0.9, ctx.currentTime, 0.05);
+}
+
+/** 0..1 — crowd noise rises when the ball nears a goal and after chances. */
+export function setCrowd(intensity: number, active: boolean) {
+  if (!ctx || !crowdGain || !crowdFilter) return;
+  const level = active ? 0.012 + intensity * 0.05 : 0.006;
+  crowdGain.gain.setTargetAtTime(level, ctx.currentTime, 0.4);
+  crowdFilter.frequency.setTargetAtTime(550 + intensity * 600, ctx.currentTime, 0.5);
+}
+
+function tone(f0: number, f1: number, dur: number, type: OscillatorType, vol: number, delay = 0) {
+  const c = audio();
+  if (!c || !master) return;
+  const o = c.createOscillator();
+  const g = c.createGain();
+  const t = c.currentTime + delay;
+  o.type = type;
+  o.frequency.setValueAtTime(Math.max(1, f0), t);
+  if (Math.abs(f0 - f1) > 1) o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(vol, t + Math.min(0.012, dur * 0.2));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g);
+  g.connect(master);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+function burst(dur: number, freq: number, vol: number, q = 0.8, delay = 0) {
+  const c = audio();
+  if (!c || !master) return;
+  const src = c.createBufferSource();
+  src.buffer = noise(c);
+  const f = c.createBiquadFilter();
+  f.type = 'bandpass';
+  f.frequency.value = freq;
+  f.Q.value = q;
+  const g = c.createGain();
+  const t = c.currentTime + delay;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(vol, t + Math.min(0.08, dur * 0.2));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f);
+  f.connect(g);
+  g.connect(master);
+  src.start(t, Math.random());
+  src.stop(t + dur + 0.05);
+}
+
+function whistle(dur: number, delay = 0) {
+  tone(2650, 2550, dur, 'sine', 0.05, delay);
+  tone(2700, 2600, dur, 'triangle', 0.02, delay);
+}
+
+export function playSfx(name: SfxName) {
+  if (muted) return;
   try {
     switch (name) {
-      case 'ui': tone(580, 720, 0.055, 'sine', 0.035); break;
-      case 'pause': tone(520, 310, 0.095, 'sine', 0.045); break;
-      case 'switch':
-        tone(620, 760, 0.045, 'sine', 0.035);
-        tone(780, 920, 0.055, 'triangle', 0.025, 0.035);
-        break;
-      case 'kickoff':
-        tone(440, 560, 0.09, 'triangle', 0.035);
-        tone(610, 760, 0.12, 'sine', 0.025, 0.075);
-        break;
-      case 'pass':
+      case 'ui': tone(620, 760, 0.06, 'sine', 0.04); break;
+      case 'pause': tone(520, 310, 0.1, 'sine', 0.045); break;
+      case 'switch': tone(700, 900, 0.05, 'triangle', 0.03); break;
+      case 'whistle': whistle(0.22); break;
+      case 'whistleLong': whistle(0.25); whistle(0.25, 0.32); whistle(0.6, 0.64); break;
+      case 'foul': whistle(0.16); whistle(0.3, 0.2); break;
       case 'kick':
-        tone(210, 150, 0.065, 'triangle', 0.055);
-        tone(680, 460, 0.035, 'sine', 0.018, 0.012);
+      case 'pass':
+        tone(190, 120, 0.06, 'triangle', 0.07);
+        burst(0.04, 1800, 0.05, 1.2);
         break;
       case 'shot':
-        tone(150, 95, 0.13, 'triangle', 0.075);
-        tone(360, 240, 0.085, 'sawtooth', 0.025, 0.008);
+        tone(150, 80, 0.12, 'triangle', 0.1);
+        burst(0.06, 1500, 0.08, 1);
         break;
       case 'power':
-        tone(105, 62, 0.18, 'triangle', 0.09);
-        tone(300, 880, 0.19, 'sawtooth', 0.035, 0.012);
+        tone(120, 55, 0.16, 'triangle', 0.13);
+        burst(0.09, 1200, 0.12, 0.9);
         break;
-      case 'touch':
-      case 'recovery':
-        tone(310, 230, 0.055, 'triangle', 0.045);
-        break;
+      case 'touch': tone(260, 190, 0.045, 'triangle', 0.045); break;
       case 'tackle':
-        tone(105, 72, 0.11, 'square', 0.045);
-        tone(190, 115, 0.085, 'triangle', 0.035, 0.018);
+        tone(110, 70, 0.1, 'square', 0.04);
+        burst(0.08, 600, 0.06);
         break;
-      case 'dive': tone(470, 170, 0.14, 'sine', 0.028); break;
+      case 'throw': burst(0.08, 900, 0.04); break;
+      case 'dive': burst(0.18, 400, 0.05, 0.5); break;
       case 'parry':
-        tone(270, 150, 0.11, 'triangle', 0.06);
-        tone(860, 430, 0.14, 'sine', 0.035, 0.015);
+        tone(260, 140, 0.1, 'triangle', 0.08);
+        burst(0.1, 900, 0.06);
+        burst(0.9, 600, 0.06, 0.5, 0.05);
         break;
-      case 'catch':
-        tone(190, 120, 0.10, 'triangle', 0.055);
-        tone(520, 400, 0.08, 'sine', 0.025, 0.025);
-        break;
+      case 'catch': tone(170, 110, 0.09, 'triangle', 0.07); break;
       case 'post':
-        tone(980, 560, 0.2, 'sine', 0.04);
-        tone(420, 330, 0.12, 'triangle', 0.022, 0.025);
+        tone(1100, 900, 0.35, 'sine', 0.05);
+        tone(1650, 1500, 0.25, 'sine', 0.025);
+        burst(0.9, 600, 0.07, 0.5, 0.05);
         break;
+      case 'net': burst(0.25, 2200, 0.05, 0.7); break;
+      case 'ooh': burst(1.1, 500, 0.08, 0.5); break;
       case 'goal':
-        tone(440, 590, 0.16, 'triangle', 0.04);
-        tone(590, 760, 0.19, 'triangle', 0.045, 0.11);
-        tone(760, 980, 0.24, 'sine', 0.038, 0.24);
-        break;
-      case 'whistle':
-        tone(1450, 1280, 0.16, 'sine', 0.038);
-        tone(1450, 1280, 0.16, 'sine', 0.038, 0.22);
+        burst(2.8, 700, 0.18, 0.4);
+        burst(2.4, 1300, 0.08, 0.6, 0.1);
+        tone(523, 659, 0.16, 'triangle', 0.035, 0.1);
+        tone(659, 784, 0.2, 'triangle', 0.035, 0.24);
+        tone(784, 1046, 0.32, 'triangle', 0.035, 0.4);
         break;
       default: break;
     }
-  } catch { /* Ignore unavailable audio devices and suspended contexts. */ }
+  } catch {
+    /* ignore */
+  }
 }
