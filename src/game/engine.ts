@@ -19,6 +19,10 @@ const BALL_OFFSET = PLAYER_RADIUS + BALL_RADIUS + 1;
 const PLAYER_COLLISION_DISTANCE = PLAYER_RADIUS * 2;
 const HOME_SUPPORT_SEPARATION_RADIUS = 112;
 const HOME_SUPPORT_SEPARATION_OFFSET = 48;
+const PLAYER_STAMINA_MAX = 100;
+const DASH_STAMINA_DRAIN = 30;
+const STAMINA_RECOVERY_RATE = 21;
+const DASH_SPEED_MULTIPLIER = 1.32;
 const BALL_PICKUP_DISTANCE = PLAYER_RADIUS + BALL_RADIUS + 5;
 const PASS_CHARGE_LIMIT = 0.25;
 const MAX_SHOT_CHARGE = 0.9;
@@ -52,8 +56,10 @@ export interface Input {
   action: boolean;
   /** Edge event preserves a quick tap even if it begins and ends between steps. */
   actionPressed: boolean;
-  /** Reserved for a later manual player-switch control. */
+  /** One-step request to select a more suitable home defender near the ball. */
   switchPlayer?: boolean;
+  /** Held to dash; stamina and movement boost are resolved by the game. */
+  dash?: boolean;
 }
 
 export interface FootballPlayer {
@@ -75,6 +81,7 @@ export interface FootballPlayer {
   aiReactionTimer: number;
   tackleCooldown: number;
   stunTimer: number;
+  stamina: number;
 }
 
 export type GoalkeeperState = 'idle' | 'positioning' | 'diving' | 'holding' | 'recovering';
@@ -123,6 +130,8 @@ export interface HudState {
   awayScore: number;
   possession: TeamPossession;
   activePlayerId: number | null;
+  activePlayerRole: PlayerRole | null;
+  stamina: number;
   power: number;
   charging: boolean;
   perfectShot: boolean;
@@ -229,6 +238,7 @@ function createPlayer(id: number, team: TeamType, slot: FormationSlot): Football
     aiReactionTimer: 0,
     tackleCooldown: 0,
     stunTimer: 0,
+    stamina: 100,
   };
 }
 
@@ -299,6 +309,7 @@ export class Game {
   goalCelebrationTeam: TeamType | null = null;
   goalCelebrationTimer = 0;
   private actionWasDown = false;
+  private manualHomeSelection = false;
   private kickoffTeam: TeamType = 'home';
   private presserCarrierId: number | null = null;
   private presserEngaged = false;
@@ -354,6 +365,8 @@ export class Game {
       awayScore: this.awayScore,
       possession: this.possession,
       activePlayerId: active?.id ?? null,
+      activePlayerRole: active?.role ?? null,
+      stamina: active?.stamina ?? 0,
       power: this.power,
       charging: this.charging,
       perfectShot: this.perfectShot,
@@ -379,6 +392,7 @@ export class Game {
       return;
     }
 
+    if (input.switchPlayer) this.switchActiveHomePlayer();
     this.updateActivePlayer();
     this.updateHumanPlayer(step, input);
     this.updatePlayerAction(step, input);
@@ -445,6 +459,7 @@ export class Game {
     }
     this.resetCharge();
     this.actionWasDown = false;
+    this.manualHomeSelection = false;
     this.goalCelebrationTimer = 0;
     this.goalCelebrationTeam = null;
     this.kickoffTeam = kickingTeam;
@@ -465,6 +480,7 @@ export class Game {
     player.aiReactionTimer = 0;
     player.tackleCooldown = 0;
     player.stunTimer = 0;
+    player.stamina = 100;
     player.formationX = slot.x;
     player.formationY = slot.y;
   }
@@ -474,7 +490,11 @@ export class Game {
     this.ball.ownerLockTimer = Math.max(0, this.ball.ownerLockTimer - dt);
     this.goalCelebrationTimer = Math.max(0, this.goalCelebrationTimer - dt);
     if (this.goalCelebrationTimer === 0) this.goalCelebrationTeam = null;
-    for (const p of this.homeTeam) this.updatePlayerTimers(p, dt);
+    const activeHomeId = this.homeTeam[this.activePlayerIndex]?.id;
+    for (const p of this.homeTeam) {
+      this.updatePlayerTimers(p, dt);
+      if (p.id !== activeHomeId) p.stamina = Math.min(PLAYER_STAMINA_MAX, p.stamina + STAMINA_RECOVERY_RATE * dt);
+    }
     for (const p of this.awayTeam) this.updatePlayerTimers(p, dt);
   }
 
@@ -488,12 +508,46 @@ export class Game {
     if (player.stateTimer === 0 && (player.state === 'tackling' || player.state === 'receiving' || player.state === 'passing' || player.state === 'shooting')) player.state = 'idle';
   }
 
-  /** Prefer the carrier or intended pass receiver; otherwise select the nearest home player. */
+  /** Switches to another nearby home player, biasing defenders when the opponent is threatening. */
+  private switchActiveHomePlayer() {
+    if (this.ball.owner === 'home' && this.ball.ownerId !== null) return;
+    if (this.ball.owner === 'none' && this.ball.targetTeam === 'home' && this.ball.targetId !== null) return;
+
+    const opponentCarrier = this.ball.owner === 'away' ? this.getPlayer('away', this.ball.ownerId) : null;
+    const targetX = opponentCarrier?.x ?? this.ball.x;
+    const targetY = opponentCarrier?.y ?? this.ball.y;
+    const defending = opponentCarrier !== null || this.ball.keeperOwner === 'away';
+    let bestIndex = -1;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i < this.homeTeam.length; i++) {
+      const player = this.homeTeam[i];
+      if (i === this.activePlayerIndex && this.homeTeam.length > 1) continue;
+      let score = magnitude(player.x - targetX, player.y - targetY);
+      if (defending && targetY > CENTER_Y) {
+        if (player.role === 'defender') score -= 26;
+        else if (player.role === 'midfielder') score -= 8;
+        else score += 20;
+      }
+      if (score < bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex !== -1) {
+      this.activePlayerIndex = bestIndex;
+      this.manualHomeSelection = true;
+    }
+  }
+
+  /** Prefer the carrier or intended receiver; otherwise honor a manual switch or select nearest. */
   private updateActivePlayer() {
     if (this.ball.owner === 'home' && this.ball.ownerId !== null) {
       const holderIndex = this.homeTeam.findIndex(p => p.id === this.ball.ownerId);
       if (holderIndex !== -1) {
         this.activePlayerIndex = holderIndex;
+        this.manualHomeSelection = false;
         return;
       }
     }
@@ -501,9 +555,11 @@ export class Game {
       const receiverIndex = this.homeTeam.findIndex(p => p.id === this.ball.targetId);
       if (receiverIndex !== -1) {
         this.activePlayerIndex = receiverIndex;
+        this.manualHomeSelection = false;
         return;
       }
     }
+    if (this.manualHomeSelection && this.homeTeam[this.activePlayerIndex]) return;
     this.activePlayerIndex = this.findNearestHomePlayerIndex();
   }
 
@@ -568,7 +624,15 @@ export class Game {
     }
 
     const isCarrier = this.ball.owner === 'home' && this.ball.ownerId === player.id;
-    const speedScale = this.charging && isCarrier ? 0.72 : 1;
+    const moving = magnitude(dx, dy) > 0.12;
+    const isDashing = input.dash === true && moving && player.stamina > 0;
+    if (isDashing) {
+      player.stamina = Math.max(0, player.stamina - DASH_STAMINA_DRAIN * dt);
+    } else {
+      player.stamina = Math.min(PLAYER_STAMINA_MAX, player.stamina + STAMINA_RECOVERY_RATE * dt);
+    }
+    const chargeScale = this.charging && isCarrier ? 0.72 : 1;
+    const speedScale = chargeScale * (isDashing ? DASH_SPEED_MULTIPLIER : 1);
     const blend = 1 - Math.exp(-12 * dt);
     const targetVx = dx * player.speed * speedScale;
     const targetVy = dy * player.speed * speedScale;
@@ -2113,9 +2177,16 @@ export class Game {
     ctx.save();
     ctx.translate(player.x, player.y);
     if (active) {
-      ctx.strokeStyle = 'rgba(253,230,138,0.95)';
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(0, 0, PLAYER_RADIUS + 5, 0, PI2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(253,230,138,0.98)';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, PLAYER_RADIUS + 6, 0, PI2); ctx.stroke();
+      ctx.fillStyle = '#fde68a';
+      ctx.beginPath();
+      ctx.moveTo(0, -PLAYER_RADIUS - 15);
+      ctx.lineTo(-5, -PLAYER_RADIUS - 7);
+      ctx.lineTo(5, -PLAYER_RADIUS - 7);
+      ctx.closePath();
+      ctx.fill();
     }
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
     ctx.beginPath(); ctx.ellipse(2, 6, PLAYER_RADIUS, PLAYER_RADIUS * 0.58, 0, 0, PI2); ctx.fill();

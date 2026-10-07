@@ -175,4 +175,40 @@ function step(game, count) {
   assert.ok(newReceiverDistance < oldReceiverDistance, 'receiver should anticipate the ball trajectory');
 }
 
-console.log('Home support checks passed: forward runs, midfield outlets, defensive cover, open-side choice, separation, pass follow-through and receiver anticipation.');
+// Dash gives a short speed boost and spends the active player's stamina.
+{
+  const normal = newGame();
+  const sprint = newGame();
+  const normalCarrier = normal.homeTeam[normal.activePlayerIndex];
+  const sprintCarrier = sprint.homeTeam[sprint.activePlayerIndex];
+  const initialX = sprintCarrier.x;
+  for (let i = 0; i < 24; i++) {
+    normal.update(STEP, { ...INPUT, dx: 1 });
+    sprint.update(STEP, { ...INPUT, dx: 1, dash: true });
+  }
+  assert.ok(sprintCarrier.x - initialX > normalCarrier.x - initialX + 35, 'dash should accelerate the active player');
+  assert.ok(sprintCarrier.stamina < 80, 'dash should drain stamina');
+  assert.equal(sprint.hud().activePlayerRole, 'midfielder');
+  assert.ok(sprint.hud().stamina < 80, 'HUD snapshot should expose stamina');
+}
+
+// Manual switch selects a nearby defender under threat and remains selected until possession is won.
+{
+  const game = newGame();
+  Object.assign(game.homeTeam[0], { x: 520, y: 900 });
+  Object.assign(game.homeTeam[1], { x: 250, y: 700 });
+  Object.assign(game.homeTeam[2], { x: 420, y: 800 });
+  Object.assign(game.homeTeam[3], { x: 400, y: 500 });
+  Object.assign(game.awayTeam[3], { x: 500, y: 1000 });
+  Object.assign(game.ball, { owner: 'away', ownerId: game.awayTeam[3].id, x: 500, y: 1000, lastTouchTeam: 'away' });
+  game.possession = 'away';
+  game.update(STEP, { ...INPUT, switchPlayer: true });
+  assert.equal(game.homeTeam[game.activePlayerIndex].id, game.homeTeam[0].id, 'switch should pick the best-placed defender');
+  game.update(STEP, INPUT);
+  assert.equal(game.homeTeam[game.activePlayerIndex].id, game.homeTeam[0].id, 'manual defensive selection should persist');
+  Object.assign(game.ball, { owner: 'home', ownerId: game.homeTeam[2].id });
+  game.update(STEP, INPUT);
+  assert.equal(game.homeTeam[game.activePlayerIndex].id, game.homeTeam[2].id, 'possession should return control to the carrier');
+}
+
+console.log('Home support checks passed: roles, defense, space, separation, passing, dash/stamina and manual switch.');
