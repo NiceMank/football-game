@@ -197,14 +197,21 @@ function shotLineY(m) {
   assert(up >= 15 && down >= 15, `C + up/down aims at the near/far post (${up}/20 up, ${down}/20 down)`);
 }
 {
-  let ok = 0;
+  let low = 0;
+  let high = 0;
+  let centre = 0;
   for (let i = 0; i < 20; i++) {
-    const { m } = shooterSetup();
-    const input = createInput();
-    tap(m, input, 'shoot', 2, { dx: 0.98, dy: 0.2, power: 0.7 });
-    if (shotLineY(m) > 20) ok++;
+    for (const [dy, kind] of [[0.5, 'low'], [-0.5, 'high'], [0, 'centre']]) {
+      const { m } = shooterSetup();
+      const input = createInput();
+      tap(m, input, 'shoot', 2, { dx: Math.sqrt(1 - dy * dy), dy, power: 0.7 });
+      const y = shotLineY(m);
+      if (kind === 'low' && y > 25) low++;
+      if (kind === 'high' && y < -25) high++;
+      if (kind === 'centre' && Math.abs(y) < 40) centre++;
+    }
   }
-  assert(ok >= 15, `swipe shot aims along the swipe (${ok}/20 to the swiped side)`);
+  assert(low >= 15 && high >= 15 && centre >= 14, `swipe shot aims at post / centre / other post (${low}, ${centre}, ${high} of 20)`);
 }
 {
   const { m, p } = carrierSetup();

@@ -278,20 +278,14 @@ export class HumanController {
 
   doShot(m: Match, p: Player, swipe: AimSwipe | null, hold: number) {
     const team = p.team;
-    const gx = team.oppGoalX;
-    const b = m.ball;
     let aimY: number;
     let power: number;
     let finesse = false;
     if (swipe) {
       power = Math.max(this.charge, swipe.power);
-      const along = (gx - b.x) * team.dir;
-      if (swipe.dx * team.dir > 0.12 && along > 0) {
-        aimY = b.y + (swipe.dy / Math.abs(swipe.dx)) * along;
-      } else {
-        aimY = CY + Math.sign(swipe.dy || 1) * GOAL_HALF * 1.4;
-      }
-      aimY = clamp(aimY, CY - GOAL_HALF * 1.8, CY + GOAL_HALF * 1.8);
+      // Swipe angle -> spot on the goal mouth: straight = centre, ~30° = post, steeper = wide.
+      const ang = Math.atan2(swipe.dy, Math.max(0.05, swipe.dx * team.dir));
+      aimY = CY + clamp(ang / 0.52, -1.5, 1.5) * (GOAL_HALF - 12);
       finesse = swipe.power < 0.45 && this.charge < 0.3;
     } else if (hold < TAP_SHOT) {
       // Controlled placed shot: lower pace, better accuracy, aimed away from the keeper unless directed.
@@ -376,6 +370,8 @@ export class HumanController {
   autoSwitch(m: Match) {
     const team = m.humanTeam;
     if (!team || !team.controlled || m.ball.owner?.team === team) return;
+    // Never override a manual switch the player just made.
+    if (m.time - this.lastSwitch < 1.2) return;
     const cur = team.controlled;
     const tc = interceptTime(cur, m);
     const best = bestSwitch(team, m, null, 0);
