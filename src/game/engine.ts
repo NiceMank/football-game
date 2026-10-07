@@ -23,6 +23,16 @@ const MAX_SHOT_CHARGE = 0.9;
 const PERFECT_SHOT_MIN = 0.78;
 const PERFECT_SHOT_MAX = 0.91;
 const OWNER_LOCK_DURATION = 0.28;
+const GK_DIVE_TRIGGER_TIME = 0.95;
+const GK_DIVE_DURATION = 0.95;
+const GK_RECOVERY_DURATION = 0.42;
+const GK_HOLD_DURATION = 0.52;
+const GK_NORMAL_SPEED = 112;
+const GK_DIVE_SPEED = 238;
+const GK_NORMAL_SAVE_RADIUS = 23;
+const GK_DIVE_SAVE_RADIUS = 34;
+const GK_CATCH_SPEED = 470;
+const GK_CATCH_RADIUS = 25;
 const PI2 = Math.PI * 2;
 
 export type TeamType = 'home' | 'away';
@@ -65,13 +75,22 @@ export interface FootballPlayer {
   stunTimer: number;
 }
 
+export type GoalkeeperState = 'idle' | 'positioning' | 'diving' | 'holding' | 'recovering';
+
 export interface Goalkeeper {
   team: TeamType;
   x: number;
   y: number;
   vx: number;
   vy: number;
-  state: 'idle';
+  state: GoalkeeperState;
+  stateTimer: number;
+  angle: number;
+  diveTargetX: number;
+  diveTargetY: number;
+  diveDirectionX: number;
+  diveDirectionY: number;
+  diveCanCatch: boolean;
 }
 
 export interface FootballBall {
@@ -89,6 +108,12 @@ export interface FootballBall {
   /** Pass target remains marked while the ball is travelling. */
   targetTeam: TeamType | null;
   targetId: number | null;
+  /** Team whose goalkeeper may need to defend a shot in flight. */
+  shotTeam: TeamType | null;
+  shotPower: number;
+  shotAttempted: boolean;
+  /** Ball is held by a keeper without pretending it is owned by an outfield player. */
+  keeperOwner: TeamType | null;
 }
 
 export interface HudState {
@@ -206,13 +231,21 @@ function createPlayer(id: number, team: TeamType, slot: FormationSlot): Football
 }
 
 function createKeeper(team: TeamType): Goalkeeper {
+  const y = team === 'home' ? FIELD_BOTTOM - 28 : FIELD_TOP + 28;
   return {
     team,
     x: CENTER_X,
-    y: team === 'home' ? FIELD_BOTTOM - 28 : FIELD_TOP + 28,
+    y,
     vx: 0,
     vy: 0,
     state: 'idle',
+    stateTimer: 0,
+    angle: team === 'home' ? -Math.PI / 2 : Math.PI / 2,
+    diveTargetX: CENTER_X,
+    diveTargetY: y,
+    diveDirectionX: 0,
+    diveDirectionY: team === 'home' ? -1 : 1,
+    diveCanCatch: false,
   };
 }
 
@@ -248,6 +281,10 @@ export class Game {
     ownerLockTimer: 0,
     targetTeam: null,
     targetId: null,
+    shotTeam: null,
+    shotPower: 0,
+    shotAttempted: false,
+    keeperOwner: null,
   };
 
   camX = CENTER_X - W / 2;
@@ -345,7 +382,9 @@ export class Game {
     this.updatePlayerAction(step, input);
     this.updateFormationPlayers(step);
     this.resolvePlayerCollisions();
+    this.updateGoalkeepers(step);
     this.updateBall(step);
+    this.resolveGoalkeeperBallCollision();
     this.resolvePlayerBallCollision();
     this.checkGoal();
     this.updateActivePlayer();
@@ -389,6 +428,10 @@ export class Game {
     this.ball.ownerLockTimer = 0.65;
     this.ball.targetTeam = null;
     this.ball.targetId = null;
+    this.ball.shotTeam = null;
+    this.ball.shotPower = 0;
+    this.ball.shotAttempted = false;
+    this.ball.keeperOwner = null;
     this.possession = kickingTeam;
     this.awayMode = kickingTeam === 'away' ? 'attacking' : 'defending';
     this.defensivePresserId = null;
@@ -651,6 +694,10 @@ export class Game {
     ball.owner = 'none';
     ball.ownerId = null;
     ball.lastTouchTeam = 'home';
+    ball.shotTeam = null;
+    ball.shotPower = 0;
+    ball.shotAttempted = false;
+    ball.keeperOwner = null;
     ball.acquisitionCooldown = 0.06;
     ball.ownerLockTimer = 0;
     ball.targetTeam = 'home';
@@ -686,6 +733,10 @@ export class Game {
     ball.owner = 'none';
     ball.ownerId = null;
     ball.lastTouchTeam = 'home';
+    ball.shotTeam = 'away';
+    ball.shotPower = shotPower;
+    ball.shotAttempted = false;
+    ball.keeperOwner = null;
     ball.acquisitionCooldown = 0.12;
     ball.ownerLockTimer = 0;
     ball.targetTeam = null;
@@ -977,6 +1028,10 @@ export class Game {
     ball.owner = 'none';
     ball.ownerId = null;
     ball.lastTouchTeam = 'away';
+    ball.shotTeam = null;
+    ball.shotPower = 0;
+    ball.shotAttempted = false;
+    ball.keeperOwner = null;
     ball.acquisitionCooldown = 0.06;
     ball.ownerLockTimer = 0;
     ball.targetTeam = 'away';
@@ -1007,6 +1062,10 @@ export class Game {
     ball.owner = 'none';
     ball.ownerId = null;
     ball.lastTouchTeam = 'away';
+    ball.shotTeam = 'home';
+    ball.shotPower = power;
+    ball.shotAttempted = false;
+    ball.keeperOwner = null;
     ball.acquisitionCooldown = 0.12;
     ball.ownerLockTimer = 0;
     ball.targetTeam = null;
@@ -1129,8 +1188,385 @@ export class Game {
     b.y = clamp(b.y + ny * overlap, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
   }
 
+  /** Advances both keepers with the same movement, read and save rules. */
+  private updateGoalkeepers(dt: number) {
+    this.updateGoalkeeper(this.homeKeeper, dt);
+    this.updateGoalkeeper(this.awayKeeper, dt);
+  }
+
+  private updateGoalkeeper(keeper: Goalkeeper, dt: number) {
+    if (keeper.state === 'holding') {
+      keeper.vx = 0;
+      keeper.vy = 0;
+      keeper.stateTimer = Math.max(0, keeper.stateTimer - dt);
+      if (keeper.stateTimer === 0) this.distributeKeeperBall(keeper);
+      return;
+    }
+
+    if (keeper.state === 'diving') {
+      keeper.stateTimer = Math.max(0, keeper.stateTimer - dt);
+      this.moveGoalkeeperToward(keeper, keeper.diveTargetX, keeper.diveTargetY, GK_DIVE_SPEED, dt);
+      if (keeper.stateTimer === 0) {
+        keeper.state = 'recovering';
+        keeper.stateTimer = GK_RECOVERY_DURATION;
+        keeper.diveCanCatch = false;
+      }
+      return;
+    }
+
+    if (keeper.state === 'recovering') keeper.stateTimer = Math.max(0, keeper.stateTimer - dt);
+    this.positionGoalkeeper(keeper, dt);
+    this.tryStartGoalkeeperDive(keeper);
+    if (keeper.state === 'recovering' && keeper.stateTimer === 0) keeper.state = 'idle';
+  }
+
+  /** Keeps a keeper between the threat and the goal without leaving the penalty area. */
+  private positionGoalkeeper(keeper: Goalkeeper, dt: number) {
+    const ball = this.ball;
+    const goalY = keeper.team === 'home' ? FIELD_BOTTOM : FIELD_TOP;
+    const fieldDirection = keeper.team === 'home' ? -1 : 1;
+    const opponentTeam: TeamType = keeper.team === 'home' ? 'away' : 'home';
+    let sourceX = ball.x;
+    let sourceY = ball.y;
+    let carrier: FootballPlayer | null = null;
+    let threatWeight = 0.78;
+
+    if (ball.owner === opponentTeam) {
+      carrier = this.getPlayer(opponentTeam, ball.ownerId);
+      if (carrier) {
+        sourceX = carrier.x + carrier.vx * 0.2;
+        sourceY = carrier.y + carrier.vy * 0.2;
+        threatWeight = 0.92;
+      }
+    } else if (ball.owner === keeper.team || ball.keeperOwner === keeper.team) {
+      threatWeight = 0.22;
+    } else if (ball.keeperOwner !== null) {
+      threatWeight = 0.12;
+    } else {
+      const towardGoalSpeed = ball.vy * (keeper.team === 'home' ? 1 : -1);
+      const lookAhead = towardGoalSpeed > 0
+        ? clamp(0.12 + Math.abs(towardGoalSpeed) / 1800, 0.12, 0.34)
+        : 0.08;
+      sourceX += ball.vx * lookAhead;
+      sourceY += ball.vy * lookAhead;
+    }
+
+    sourceX = clamp(sourceX, FIELD_LEFT, FIELD_RIGHT);
+    sourceY = clamp(sourceY, FIELD_TOP, FIELD_BOTTOM);
+    const goalDistance = Math.abs(goalY - sourceY);
+    const depth = clamp(31 + (420 - goalDistance) * 0.11, 31, 72);
+    const targetY = goalY + fieldDirection * depth;
+    const goalDeltaY = goalY - sourceY;
+    const fractionToKeeper = Math.abs(goalDeltaY) > 1
+      ? clamp((targetY - sourceY) / goalDeltaY, 0, 1)
+      : 0.5;
+    let targetX = CENTER_X + (sourceX - CENTER_X) * (1 - fractionToKeeper) * threatWeight;
+
+    // If a carrier is facing goal, shade a little toward the shot lane implied by their angle.
+    if (carrier) {
+      const faceX = Math.cos(carrier.angle);
+      const faceY = Math.sin(carrier.angle);
+      const towardGoalY = goalY - sourceY;
+      const facingDot = (faceX * (CENTER_X - sourceX) + faceY * towardGoalY)
+        / Math.max(1, magnitude(CENTER_X - sourceX, towardGoalY));
+      if (faceY * towardGoalY > 0.08 && facingDot > 0.2) {
+        const aimedX = sourceX + (targetY - sourceY) * faceX / faceY;
+        if (aimedX > CENTER_X - GOAL_WIDTH / 2 - 65 && aimedX < CENTER_X + GOAL_WIDTH / 2 + 65) {
+          targetX += (aimedX - targetX) * clamp(facingDot * 0.22, 0, 0.24) * threatWeight;
+        }
+      }
+    }
+
+    targetX = clamp(targetX, CENTER_X - GOAL_WIDTH / 2 - 36, CENTER_X + GOAL_WIDTH / 2 + 36);
+    if (Math.abs(sourceX - keeper.x) + Math.abs(sourceY - keeper.y) > 0.01) {
+      keeper.angle = Math.atan2(sourceY - keeper.y, sourceX - keeper.x);
+    }
+    this.moveGoalkeeperToward(keeper, targetX, targetY, GK_NORMAL_SPEED, dt);
+    if (keeper.state !== 'recovering') {
+      const remaining = magnitude(targetX - keeper.x, targetY - keeper.y);
+      keeper.state = remaining > 4 ? 'positioning' : 'idle';
+    }
+  }
+
+  /** Smoothed dt-based keeper movement, bounded to a reasonable goal-area envelope. */
+  private moveGoalkeeperToward(keeper: Goalkeeper, targetX: number, targetY: number, maxSpeed: number, dt: number) {
+    const goalY = keeper.team === 'home' ? FIELD_BOTTOM : FIELD_TOP;
+    const dx = targetX - keeper.x;
+    const dy = targetY - keeper.y;
+    const distance = magnitude(dx, dy);
+    const targetSpeed = Math.min(maxSpeed, distance * 3.8);
+    const targetVx = distance > 0.001 ? dx / distance * targetSpeed : 0;
+    const targetVy = distance > 0.001 ? dy / distance * targetSpeed : 0;
+    const response = maxSpeed === GK_DIVE_SPEED ? 15 : 8;
+    const blend = 1 - Math.exp(-response * dt);
+    keeper.vx += (targetVx - keeper.vx) * blend;
+    keeper.vy += (targetVy - keeper.vy) * blend;
+    keeper.x += keeper.vx * dt;
+    keeper.y += keeper.vy * dt;
+
+    const minX = Math.max(FIELD_LEFT + PLAYER_RADIUS, CENTER_X - GOAL_WIDTH / 2 - 44);
+    const maxX = Math.min(FIELD_RIGHT - PLAYER_RADIUS, CENTER_X + GOAL_WIDTH / 2 + 44);
+    keeper.x = clamp(keeper.x, minX, maxX);
+    if ((keeper.x === minX && keeper.vx < 0) || (keeper.x === maxX && keeper.vx > 0)) keeper.vx = 0;
+    const minY = keeper.team === 'home' ? goalY - 104 : goalY + 3;
+    const maxY = keeper.team === 'home' ? goalY - 3 : goalY + 104;
+    keeper.y = clamp(keeper.y, minY, maxY);
+    if ((keeper.y === minY && keeper.vy < 0) || (keeper.y === maxY && keeper.vy > 0)) keeper.vy = 0;
+  }
+
+  /** Projects an on-frame shot to the goal line and starts a dive as it enters range. */
+  private tryStartGoalkeeperDive(keeper: Goalkeeper) {
+    const ball = this.ball;
+    if (ball.shotTeam !== keeper.team || ball.shotAttempted || ball.keeperOwner !== null) return;
+
+    const goalY = keeper.team === 'home' ? FIELD_BOTTOM : FIELD_TOP;
+    const goalDirection = keeper.team === 'home' ? 1 : -1;
+    const distanceToLine = (goalY - ball.y) * goalDirection;
+    const towardGoalSpeed = ball.vy * goalDirection;
+    if (distanceToLine < -BALL_RADIUS || towardGoalSpeed <= 1) return;
+
+    const drag = -Math.log(clamp(ball.friction, 0.05, 0.9999));
+    let timeToLine: number;
+    let travelFactor: number;
+    if (drag < 0.0001) {
+      timeToLine = distanceToLine / towardGoalSpeed;
+      travelFactor = timeToLine;
+    } else {
+      const stoppingRatio = distanceToLine * drag / towardGoalSpeed;
+      if (stoppingRatio >= 0.999) {
+        ball.shotAttempted = true;
+        return;
+      }
+      timeToLine = -Math.log(1 - stoppingRatio) / drag;
+      travelFactor = (1 - Math.exp(-drag * timeToLine)) / drag;
+    }
+
+    const crossingX = ball.x + ball.vx * travelFactor;
+    const postLeft = CENTER_X - GOAL_WIDTH / 2 + BALL_RADIUS;
+    const postRight = CENTER_X + GOAL_WIDTH / 2 - BALL_RADIUS;
+    if (crossingX < postLeft || crossingX > postRight) {
+      ball.shotAttempted = true;
+      return;
+    }
+    if (timeToLine > GK_DIVE_TRIGGER_TIME) return;
+
+    const targetX = clamp(crossingX, CENTER_X - GOAL_WIDTH / 2 - 30, CENTER_X + GOAL_WIDTH / 2 + 30);
+    const targetY = goalY - goalDirection * 21;
+    const expectedSpeed = magnitude(ball.vx, ball.vy) * Math.exp(-drag * timeToLine);
+    keeper.diveTargetX = targetX;
+    keeper.diveTargetY = targetY;
+    const dx = targetX - keeper.x;
+    const dy = targetY - keeper.y;
+    const travelDistance = magnitude(dx, dy);
+    keeper.diveDirectionX = travelDistance > 0.001 ? dx / travelDistance : 0;
+    keeper.diveDirectionY = travelDistance > 0.001 ? dy / travelDistance : goalDirection;
+    keeper.diveCanCatch = ball.shotPower <= 0.62
+      && expectedSpeed <= GK_CATCH_SPEED
+      && Math.abs(dx) <= GK_CATCH_RADIUS;
+    keeper.angle = Math.atan2(ball.y - keeper.y, ball.x - keeper.x);
+    keeper.state = 'diving';
+    keeper.stateTimer = GK_DIVE_DURATION;
+    ball.shotAttempted = true;
+  }
+
+  /** Intercepts a shot/pass at the keeper's real position; catches hold, parries rebound. */
+  private resolveGoalkeeperBallCollision() {
+    this.resolveKeeperBallCollision(this.homeKeeper);
+    this.resolveKeeperBallCollision(this.awayKeeper);
+  }
+
+  private resolveKeeperBallCollision(keeper: Goalkeeper) {
+    const ball = this.ball;
+    if (ball.owner !== 'none' || ball.keeperOwner !== null) return;
+    const isMarkedShot = ball.shotTeam === keeper.team;
+    if (ball.shotTeam !== null && !isMarkedShot) return;
+    if (!isMarkedShot && ball.lastTouchTeam === keeper.team) return;
+
+    const goalDirection = keeper.team === 'home' ? 1 : -1;
+    if (!isMarkedShot && ball.vy * goalDirection <= 0) return;
+    const dx = ball.x - keeper.x;
+    const dy = ball.y - keeper.y;
+    const distanceSquared = dx * dx + dy * dy;
+    const reach = keeper.state === 'diving' ? GK_DIVE_SAVE_RADIUS : GK_NORMAL_SAVE_RADIUS;
+    if (distanceSquared > reach * reach) return;
+
+    const incomingSpeed = magnitude(ball.vx, ball.vy);
+    const canCatch = incomingSpeed <= GK_CATCH_SPEED
+      && distanceSquared <= GK_CATCH_RADIUS * GK_CATCH_RADIUS
+      && (keeper.diveCanCatch || (!isMarkedShot && keeper.state !== 'diving'));
+    if (canCatch) {
+      this.captureBallWithKeeper(keeper);
+      return;
+    }
+    this.parryBallWithKeeper(keeper, dx, dy, distanceSquared, incomingSpeed);
+  }
+
+  private captureBallWithKeeper(keeper: Goalkeeper) {
+    const ball = this.ball;
+    ball.owner = 'none';
+    ball.ownerId = null;
+    ball.keeperOwner = keeper.team;
+    ball.lastTouchTeam = keeper.team;
+    ball.targetTeam = null;
+    ball.targetId = null;
+    ball.shotTeam = null;
+    ball.shotPower = 0;
+    ball.shotAttempted = false;
+    ball.ownerLockTimer = 0;
+    ball.acquisitionCooldown = 0;
+    ball.vx = 0;
+    ball.vy = 0;
+    this.possession = keeper.team;
+    keeper.vx = 0;
+    keeper.vy = 0;
+    keeper.angle = keeper.team === 'home' ? -Math.PI / 2 : Math.PI / 2;
+    keeper.state = 'holding';
+    keeper.stateTimer = GK_HOLD_DURATION;
+    keeper.diveCanCatch = false;
+    this.sfx?.('touch');
+  }
+
+  private parryBallWithKeeper(keeper: Goalkeeper, offsetX: number, offsetY: number, distanceSquared: number, incomingSpeed: number) {
+    const ball = this.ball;
+    const distance = Math.sqrt(distanceSquared);
+    const normalX = distance > 0.001 ? offsetX / distance : keeper.diveDirectionX;
+    const normalY = distance > 0.001 ? offsetY / distance : keeper.diveDirectionY;
+    const projection = ball.vx * normalX + ball.vy * normalY;
+    let reflectedX = ball.vx - 2 * projection * normalX;
+    let reflectedY = ball.vy - 2 * projection * normalY;
+    const fieldDirection = keeper.team === 'home' ? -1 : 1;
+    if (reflectedY * fieldDirection < 0) reflectedY = -reflectedY;
+    if (Math.abs(reflectedY) < incomingSpeed * 0.18) {
+      reflectedX += keeper.diveDirectionX * incomingSpeed * 0.28;
+      reflectedY = fieldDirection * incomingSpeed * 0.62;
+    }
+    const reflectedLength = Math.max(1, magnitude(reflectedX, reflectedY));
+    const reboundSpeed = Math.min(incomingSpeed * 0.52, 420);
+    const ballRadiusFromKeeper = PLAYER_RADIUS + BALL_RADIUS + 1;
+    ball.x = clamp(keeper.x + normalX * ballRadiusFromKeeper, FIELD_LEFT + BALL_RADIUS, FIELD_RIGHT - BALL_RADIUS);
+    ball.y = clamp(keeper.y + normalY * ballRadiusFromKeeper, FIELD_TOP + BALL_RADIUS, FIELD_BOTTOM - BALL_RADIUS);
+    ball.vx = reflectedX / reflectedLength * reboundSpeed;
+    ball.vy = reflectedY / reflectedLength * reboundSpeed;
+    ball.lastTouchTeam = keeper.team;
+    ball.targetTeam = null;
+    ball.targetId = null;
+    ball.shotTeam = null;
+    ball.shotPower = 0;
+    ball.shotAttempted = false;
+    ball.keeperOwner = null;
+    ball.ownerLockTimer = 0;
+    ball.acquisitionCooldown = 0.16;
+    this.possession = 'neutral';
+    keeper.state = 'recovering';
+    keeper.stateTimer = GK_RECOVERY_DURATION;
+    keeper.diveCanCatch = false;
+    this.sfx?.('touch');
+  }
+
+  /** Throws a held ball to a viable defender, or clears toward the least-pressured zone. */
+  private distributeKeeperBall(keeper: Goalkeeper) {
+    const ball = this.ball;
+    const teammates = keeper.team === 'home' ? this.homeTeam : this.awayTeam;
+    const opponents = keeper.team === 'home' ? this.awayTeam : this.homeTeam;
+    let receiver: FootballPlayer | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (const player of teammates) {
+      if (player.role !== 'defender') continue;
+      const dx = player.x - keeper.x;
+      const dy = player.y - keeper.y;
+      const distance = magnitude(dx, dy);
+      let nearestOpponent = Number.POSITIVE_INFINITY;
+      for (const opponent of opponents) {
+        const opponentDistance = magnitude(opponent.x - player.x, opponent.y - player.y);
+        if (opponentDistance < nearestOpponent) nearestOpponent = opponentDistance;
+      }
+      const laneClearance = this.passLaneClearance(keeper.x, keeper.y, player.x, player.y, opponents);
+      const pressurePenalty = Math.max(0, 115 - nearestOpponent) * 1.4;
+      const lanePenalty = Math.max(0, 38 - laneClearance) * 2.2;
+      const score = distance + pressurePenalty + lanePenalty;
+      if (score < bestScore) {
+        bestScore = score;
+        receiver = player;
+      }
+    }
+
+    let targetX: number;
+    let targetY: number;
+    let speed: number;
+    const directToDefender = receiver !== null
+      && magnitude(receiver.x - keeper.x, receiver.y - keeper.y) < 380
+      && this.passLaneClearance(keeper.x, keeper.y, receiver.x, receiver.y, opponents) > 24;
+    if (directToDefender && receiver) {
+      const leadTime = 0.16;
+      targetX = receiver.x + receiver.vx * leadTime;
+      targetY = receiver.y + receiver.vy * leadTime;
+      speed = clamp(magnitude(targetX - keeper.x, targetY - keeper.y) * 1.12 + 230, 420, 620);
+      ball.targetTeam = keeper.team;
+      ball.targetId = receiver.id;
+    } else {
+      const zoneY = keeper.team === 'home' ? FIELD_BOTTOM - 350 : FIELD_TOP + 350;
+      let bestZoneScore = Number.NEGATIVE_INFINITY;
+      targetX = CENTER_X;
+      targetY = zoneY;
+      for (let lane = -1; lane <= 1; lane++) {
+        const candidateX = CENTER_X + lane * 142;
+        let nearestOpponentSquared = Number.POSITIVE_INFINITY;
+        for (const opponent of opponents) {
+          const dx = opponent.x - candidateX;
+          const dy = opponent.y - zoneY;
+          const distanceSquared = dx * dx + dy * dy;
+          if (distanceSquared < nearestOpponentSquared) nearestOpponentSquared = distanceSquared;
+        }
+        const laneClearance = this.passLaneClearance(keeper.x, keeper.y, candidateX, zoneY, opponents);
+        const zoneScore = Math.sqrt(nearestOpponentSquared) + laneClearance * 0.38 - Math.abs(lane) * 12;
+        if (zoneScore > bestZoneScore) {
+          bestZoneScore = zoneScore;
+          targetX = candidateX;
+        }
+      }
+      speed = 540;
+      ball.targetTeam = null;
+      ball.targetId = null;
+    }
+
+    const dx = targetX - keeper.x;
+    const dy = targetY - keeper.y;
+    const distance = Math.max(1, magnitude(dx, dy));
+    const directionX = dx / distance;
+    const directionY = dy / distance;
+    ball.x = keeper.x + directionX * (PLAYER_RADIUS + BALL_RADIUS + 2);
+    ball.y = keeper.y + directionY * (PLAYER_RADIUS + BALL_RADIUS + 2);
+    ball.vx = directionX * speed + keeper.vx * 0.08;
+    ball.vy = directionY * speed + keeper.vy * 0.08;
+    ball.owner = 'none';
+    ball.ownerId = null;
+    ball.keeperOwner = null;
+    ball.lastTouchTeam = keeper.team;
+    ball.shotTeam = null;
+    ball.shotPower = 0;
+    ball.shotAttempted = false;
+    ball.acquisitionCooldown = 0.08;
+    ball.ownerLockTimer = 0;
+    this.possession = keeper.team;
+    this.awayMode = keeper.team === 'away' ? 'attacking' : 'defending';
+    keeper.state = 'recovering';
+    keeper.stateTimer = GK_RECOVERY_DURATION;
+    keeper.diveCanCatch = false;
+    this.sfx?.('kick');
+  }
+
   /** Updates either the controlled dribble or the free ball's dt-based motion. */
   private updateBall(dt: number) {
+    if (this.ball.keeperOwner !== null) {
+      const keeper = this.ball.keeperOwner === 'home' ? this.homeKeeper : this.awayKeeper;
+      const fieldDirection = keeper.team === 'home' ? -1 : 1;
+      this.ball.x = keeper.x + Math.cos(keeper.angle) * BALL_OFFSET * 0.65;
+      this.ball.y = keeper.y + fieldDirection * BALL_OFFSET * 0.65;
+      this.ball.vx = 0;
+      this.ball.vy = 0;
+      return;
+    }
     if (this.ball.owner !== 'none') {
       this.attachBallToOwner(dt);
       return;
@@ -1198,6 +1634,7 @@ export class Game {
   /** A close challenge knocks the ball loose; the next touch establishes possession. */
   private resolvePlayerBallCollision() {
     const ball = this.ball;
+    if (ball.keeperOwner !== null) return;
     if (ball.owner !== 'none') {
       if (ball.ownerLockTimer > 0) return;
       const carrier = this.getPlayer(ball.owner, ball.ownerId);
@@ -1236,6 +1673,10 @@ export class Game {
         ball.lastTouchTeam = challenger.team;
         ball.targetTeam = null;
         ball.targetId = null;
+        ball.shotTeam = null;
+        ball.shotPower = 0;
+        ball.shotAttempted = false;
+        ball.keeperOwner = null;
         ball.ownerLockTimer = 0;
         ball.x = clamp(carrier.x + nx * BALL_OFFSET, FIELD_LEFT + BALL_RADIUS, FIELD_RIGHT - BALL_RADIUS);
         ball.y = clamp(carrier.y + ny * BALL_OFFSET, FIELD_TOP - GOAL_DEPTH, FIELD_BOTTOM + GOAL_DEPTH);
@@ -1313,6 +1754,10 @@ export class Game {
     this.ball.lastTouchTeam = player.team;
     this.ball.targetTeam = null;
     this.ball.targetId = null;
+    this.ball.shotTeam = null;
+    this.ball.shotPower = 0;
+    this.ball.shotAttempted = false;
+    this.ball.keeperOwner = null;
     this.ball.ownerLockTimer = OWNER_LOCK_DURATION;
     this.ball.acquisitionCooldown = 0;
     this.ball.vx = player.vx;
@@ -1353,6 +1798,10 @@ export class Game {
     this.ball.ownerId = null;
     this.ball.targetTeam = null;
     this.ball.targetId = null;
+    this.ball.shotTeam = null;
+    this.ball.shotPower = 0;
+    this.ball.shotAttempted = false;
+    this.ball.keeperOwner = null;
     this.ball.ownerLockTimer = 0;
     this.ball.vx *= 0.1;
     this.ball.vy *= 0.1;
@@ -1497,14 +1946,41 @@ export class Game {
   }
 
   private drawGoalkeeper(ctx: CanvasRenderingContext2D, keeper: Goalkeeper) {
+    const diving = keeper.state === 'diving';
+    const holding = keeper.state === 'holding';
+    const poseAngle = diving
+      ? Math.atan2(keeper.diveDirectionY, keeper.diveDirectionX)
+      : keeper.angle;
+    const diveScale = diving ? 1.28 : 1;
     ctx.save();
     ctx.translate(keeper.x, keeper.y);
-    ctx.fillStyle = keeper.team === 'home' ? '#f59e0b' : '#a78bfa';
-    ctx.strokeStyle = keeper.team === 'home' ? '#7c2d12' : '#5b21b6';
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.beginPath(); ctx.ellipse(2, 7, PLAYER_RADIUS + 4, 9, 0, 0, PI2); ctx.fill();
+    ctx.rotate(poseAngle);
+    ctx.scale(diveScale, diving ? 0.78 : 1);
+
+    const shirt = keeper.team === 'home' ? '#f59e0b' : '#a78bfa';
+    const trim = keeper.team === 'home' ? '#7c2d12' : '#5b21b6';
+    ctx.strokeStyle = trim;
     ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(0, 0, PLAYER_RADIUS + 2, 0, PI2); ctx.fill(); ctx.stroke();
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    if (holding) {
+      ctx.moveTo(-10, -3); ctx.lineTo(-8, 11);
+      ctx.moveTo(10, -3); ctx.lineTo(8, 11);
+    } else {
+      ctx.moveTo(-10, -3); ctx.lineTo(-19, -8);
+      ctx.moveTo(10, -3); ctx.lineTo(19, -8);
+    }
+    ctx.stroke();
+    ctx.fillStyle = '#fef3c7';
+    ctx.beginPath(); ctx.arc(holding ? -8 : -20, holding ? 12 : -9, 4.5, 0, PI2); ctx.fill();
+    ctx.beginPath(); ctx.arc(holding ? 8 : 20, holding ? 12 : -9, 4.5, 0, PI2); ctx.fill();
+
+    ctx.fillStyle = shirt;
+    ctx.beginPath(); ctx.ellipse(0, 0, PLAYER_RADIUS + 2, PLAYER_RADIUS - 1, 0, 0, PI2); ctx.fill(); ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.beginPath(); ctx.arc(0, 0, 3.5, 0, PI2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, -2, 4, 0, PI2); ctx.fill();
     ctx.restore();
   }
 
