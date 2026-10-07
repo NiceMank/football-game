@@ -28,6 +28,8 @@ export class KeeperBrain {
   releaseBy = 5.5;
   penaltyGuess = 0;
   penaltyMode = false;
+  /** Provisional read of a long shot while he waits to see more of its flight; NaN when none. */
+  readY = NaN;
 
   reset() {
     this.state = 'set';
@@ -36,6 +38,7 @@ export class KeeperBrain {
     this.diveVX = this.diveVY = 0;
     this.diveSide = 0;
     this.penaltyMode = false;
+    this.readY = NaN;
   }
 }
 
@@ -100,6 +103,7 @@ export function updateKeeper(k: Player, m: Match, dt: number) {
   if (b.free && b.kind === 'shot' && b.kicker && b.kicker.team !== team && b.shotId !== g.seenShot && (b.vx * -inDir) > 0) {
     g.seenShot = b.shotId;
     g.state = 'react';
+    g.readY = NaN;
     let r = prof.reaction + (Math.random() * 2 - 1) * prof.reactionVar + Math.min(1, k.speed / 260) * 0.07;
     if (isScreened(k, m)) r += 0.07;
     if (g.penaltyMode) r = 0.05;
@@ -110,8 +114,9 @@ export function updateKeeper(k: Player, m: Match, dt: number) {
     g.timer -= dt;
     if (g.timer <= 0) commitToShot(k, m, prof);
     else {
-      // Still drifting with the old read while reacting.
-      k.steerTo(k.x, clamp(g.perY, CY - GOAL_HALF, CY + GOAL_HALF), 0.6, false, 20);
+      // Still drifting with the old read while reacting, or shuffling across on a provisional read.
+      if (Number.isNaN(g.readY)) k.steerTo(k.x, clamp(g.perY, CY - GOAL_HALF, CY + GOAL_HALF), 0.6, false, 20);
+      else k.steerTo(k.x, clamp(g.readY, CY - GOAL_HALF + 4, CY + GOAL_HALF - 4), 1, false, 6);
     }
     return;
   }
@@ -199,15 +204,26 @@ function commitToShot(k: Player, m: Match, prof: KeeperProfile) {
   if (t <= 0.01) return;
   const speed = Math.hypot(b.vx, b.vy, b.vz);
   // Linear read of the trajectory plus a speed-dependent error: curl and late dips fool him.
-  let py = b.y + b.vy * t + gauss() * prof.readError * (0.5 + speed / 1200);
+  // The less of the flight he has seen, the worse the read.
+  const seen = clamp(0.24 / Math.max(b.kickAge, 0.05), 0.5, 1.15);
+  let py = b.y + b.vy * t + gauss() * prof.readError * (0.5 + speed / 1200) * seen;
   let pz = Math.max(0, b.z + b.vz * t - 0.5 * GRAVITY * t * t) + gauss() * 8;
-  if (g.penaltyMode) {
+  const penalty = g.penaltyMode;
+  if (penalty) {
     g.penaltyMode = false;
     if (Math.random() > 0.35 && g.penaltyGuess !== 0) {
       py = CY + g.penaltyGuess * rand(30, 62);
       pz = rand(5, 40);
     }
   }
+  // Long flight: shuffle across on a provisional read and commit later, with a better view of the ball.
+  if (t > 0.42 && !penalty && Math.abs(py - CY) < GOAL_HALF + 40) {
+    g.state = 'react';
+    g.timer = t - 0.36;
+    g.readY = py;
+    return;
+  }
+  g.readY = NaN;
   if (Math.abs(py - CY) > GOAL_HALF + 26) {
     g.state = 'watch';
     g.timer = rand(0.16, 0.3) + prof.reaction * 0.5;

@@ -96,7 +96,9 @@ export class Ball {
     const airborne = this.z > 0.5 || this.vz > 0;
     if (airborne) {
       this.vz -= GRAVITY * dt;
-      const drag = Math.exp(-AIR_K * dt);
+      // Fast shots lose pace through the air (drag grows with speed), so long-range efforts arrive slower.
+      const fast = this.kind === 'shot' ? Math.max(0, Math.hypot(this.vx, this.vy) - 600) * 0.0014 : 0;
+      const drag = Math.exp(-(AIR_K + fast) * dt);
       this.vx *= drag;
       this.vy *= drag;
     } else {
