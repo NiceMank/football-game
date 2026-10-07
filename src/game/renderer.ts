@@ -473,8 +473,12 @@ function drawMarkers(ctx: CanvasRenderingContext2D, m: Match, cam: Camera) {
   if (team && team.controlled) {
     const p = team.controlled;
     const z = cam.zoom;
-    // Discreet ground marker: thin ring plus a small facing notch.
-    ring(ctx, cam, p.x, p.y, 14, 'rgba(253,224,71,0.95)', 1.8);
+    // Ground marker: a short ring and a facing notch, readable on both mowing stripes.
+    ctx.fillStyle = 'rgba(253,224,71,0.16)';
+    ctx.beginPath();
+    ctx.ellipse(cam.sx(p.x), cam.sy(p.y), 15 * z, 15 * z * TILT, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ring(ctx, cam, p.x, p.y, 15, '#fde047', 2.4);
     if (p.stamina < 0.6) {
       ctx.strokeStyle = p.stamina > 0.3 ? 'rgba(250,204,21,0.8)' : 'rgba(248,113,113,0.9)';
       ctx.lineWidth = 1.6;
@@ -498,8 +502,13 @@ function drawMarkers(ctx: CanvasRenderingContext2D, m: Match, cam: Camera) {
     ctx.closePath();
     ctx.fill();
     // Pass preview / receiver.
+    const showPass = b.owner === p || m.state === 'taking';
     const preview = m.human.previewTarget;
-    if (preview && (b.owner === p || m.state === 'taking')) ring(ctx, cam, preview.x, preview.y, 15, 'rgba(255,255,255,0.75)', 2, 5, -t * 30);
+    if (preview && showPass) ring(ctx, cam, preview.x, preview.y, 15, 'rgba(255,255,255,0.9)', 2, 5, -t * 30);
+    else if (m.human.previewPoint && showPass) {
+      const s = m.human.previewPoint;
+      ring(ctx, cam, s.x, s.y, 8, 'rgba(255,255,255,0.7)', 1.6, 3, -t * 24);
+    }
   }
   if (b.free && b.passTarget && m.state === 'live') {
     const r = b.passTarget;
@@ -887,10 +896,9 @@ function drawOverheads(ctx: CanvasRenderingContext2D, m: Match, cam: Camera) {
     ctx.fillRect(bx, by, bw * c, 5);
     // Aim reticle on the goal mouth while charging a shot.
     if (h.chargeKind === 'shot' && m.ball.owner === p) {
-      const gx = p.team.oppGoalX;
-      const aimY = Math.abs(h.moveY) > 0.3 ? CY + Math.sign(h.moveY) * (GOAL_HALF - 13) : CY;
-      const rx = cam.sx(gx);
-      const ry = cam.sy(aimY, 8 + c * 30);
+      const aim = h.shotReticle(p);
+      const rx = cam.sx(p.team.oppGoalX);
+      const ry = cam.sy(aim.y, aim.z);
       if (rx > 0 && rx < vw) {
         ctx.strokeStyle = 'rgba(253,224,71,0.9)';
         ctx.lineWidth = 2;

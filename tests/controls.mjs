@@ -139,6 +139,51 @@ function tap(m, input, btn, holdSteps = 2, swipe = null) {
   assert(m.ball.passTarget === t, 'a different direction picks a different receiver');
 }
 {
+  const m = liveMatch(E);
+  const p = m.home.players[2];
+  p.x = 700;
+  p.y = CY;
+  p.facing = 0;
+  p.vx = p.vy = 0;
+  const fwd = m.home.players[4];
+  fwd.x = 980;
+  fwd.y = CY;
+  const back = m.home.players[1];
+  back.x = 480;
+  back.y = CY;
+  for (const t of m.home.players) {
+    if (t !== p && t !== fwd && t !== back) { t.x = 200; t.y = 80; }
+  }
+  for (const o of m.away.players) if (!o.isGK) { o.x = 1400; o.y = 100 + o.index * 120; }
+  m.gainPossession(p);
+  m.home.controlled = p;
+  const input = createInput();
+  step(m, input, 2);
+  assert(m.human.previewTarget === fwd, 'with no direction held, the pass preview shows the teammate ahead');
+  tap(m, input, 'pass');
+  assert(m.ball.passTarget === fwd, 'an unaimed pass goes to the previewed teammate, not the one behind');
+}
+{
+  const m = liveMatch(E);
+  const p = m.home.players[2];
+  p.x = 700;
+  p.y = CY;
+  p.facing = 0;
+  p.vx = p.vy = 0;
+  for (const t of m.home.players) if (t !== p) t.x = 980;
+  for (const t of m.home.players) if (t !== p) t.y = CY + (t.index - 2) * 40;
+  for (const o of m.away.players) if (!o.isGK) { o.x = 1400; o.y = 100; }
+  m.gainPossession(p);
+  m.home.controlled = p;
+  const input = createInput();
+  input.moveY = -1;
+  step(m, input, 2);
+  const spot = m.human.previewPoint;
+  assert(m.human.previewTarget === null && spot && spot.y < p.y - 80, 'aiming into empty space previews that space');
+  tap(m, input, 'pass');
+  assert(m.ball.passTarget === null && m.ball.vy < -80, 'a pass aimed into empty space follows the stick, not a teammate off to the side');
+}
+{
   const { m } = carrierSetup();
   const input = createInput();
   tap(m, input, 'pass', Math.round(0.5 / FIXED_DT));
@@ -188,6 +233,32 @@ function shotLineY(m) {
   const input = createInput();
   tap(m, input, 'shoot', Math.round(0.8 / FIXED_DT));
   assert(m.ball.kind === 'shot' && m.ball.shotPower > 0.85, `holding C charges the shot (power ${m.ball.shotPower.toFixed(2)})`);
+}
+{
+  let centre = 0;
+  let far = 0;
+  let high = 0;
+  for (let i = 0; i < 10; i++) {
+    const charged = shooterSetup();
+    const hold = createInput();
+    tap(charged.m, hold, 'shoot', Math.round(0.8 / FIXED_DT));
+    centre += shotLineY(charged.m);
+    const a = shooterSetup();
+    a.m.away.keeper.y = CY + 40;
+    a.m.away.keeper.gk.state = 'down';
+    a.m.away.keeper.gk.timer = 9;
+    const input = createInput();
+    tap(a.m, input, 'shoot', 2);
+    if (shotLineY(a.m) < -35) far++;
+    const b = shooterSetup();
+    const up = createInput();
+    up.moveY = -1;
+    tap(b.m, up, 'shoot', 2);
+    if (shotLineY(b.m) < -25) high++;
+  }
+  assert(Math.abs(centre / 10) < 20, `a charged shot with no vertical aim goes at the centre (mean ${ (centre / 10).toFixed(0) })`);
+  assert(far >= 8, `a tap with no direction is a placed shot away from the keeper (${far}/10)`);
+  assert(high >= 8, `holding up while tapping C aims at the top post (${high}/10)`);
 }
 {
   let up = 0;

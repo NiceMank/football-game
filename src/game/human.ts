@@ -29,7 +29,8 @@ export class HumanController {
   private lastSwitch = -9;
   private switchRank = 0;
   previewTarget: Player | null = null;
-  private previewTimer = 0;
+  /** Landing spot shown when the next pass has no teammate in the aimed direction. */
+  previewPoint: { x: number; y: number } | null = null;
   takingTimer = 0;
   /** A tackle pressed while the carrier is still taking his touch fires as soon as it can. */
   private tackleBuffer = 0;
@@ -43,6 +44,7 @@ export class HumanController {
     this.chargeKind = null;
     this.queued = null;
     this.previewTarget = null;
+    this.previewPoint = null;
     this.takingTimer = 0;
   }
 
@@ -120,7 +122,7 @@ export class HumanController {
     if (b.owner === p) {
       p.steerDir(mx, my, mag, input.sprint);
       if (input.dashPressed) knockOn(m, p);
-      this.updatePreview(dt, p);
+      this.updatePreview(p);
       if (input.passReleased && this.passHold >= 0) {
         this.doPass(m, p, input.passSwipe, this.passHold);
         this.passHold = -1;
@@ -132,6 +134,7 @@ export class HumanController {
       return;
     }
     this.previewTarget = null;
+    this.previewPoint = null;
 
     const defending = b.owner !== null && b.owner.team !== team;
     const receiving = b.free && b.passTarget === p;
@@ -211,18 +214,42 @@ export class HumanController {
   }
 
   private keyboardAimY(p: Player) {
-    if (Math.abs(this.moveY) > 0.3) return CY + Math.sign(this.moveY) * (GOAL_HALF - 13);
-    return farSideAim(p);
+    return this.shotAimY(p, 0);
   }
 
-  private updatePreview(dt: number, p: Player) {
-    this.previewTimer -= dt;
-    if (this.previewTimer > 0) return;
-    this.previewTimer = 0.1;
+  /**
+   * Where a shot released at this hold would go. The on-pitch reticle reads the same value,
+   * so what the player sees is what the ball is aimed at.
+   */
+  shotAimY(p: Player, hold: number) {
+    const powered = hold >= TAP_SHOT;
+    if (Math.abs(this.moveY) > 0.3) return CY + Math.sign(this.moveY) * (GOAL_HALF - (powered ? 13 : 16));
+    return powered ? CY : farSideAim(p);
+  }
+
+  /** Reticle for the shot currently being charged: same aim as the release, and a lower spot while it is still a placed shot. */
+  shotReticle(p: Player) {
+    const hold = this.charge * SHOT_CHARGE_TIME;
+    return { y: this.shotAimY(p, hold), z: hold < TAP_SHOT ? 12 : 8 + this.charge * 30 };
+  }
+
+  private updatePreview(p: Player) {
     const mag = Math.hypot(this.moveX, this.moveY);
-    const dx = mag > 0.2 ? this.moveX : Math.cos(p.facing);
-    const dy = mag > 0.2 ? this.moveY : Math.sin(p.facing);
-    this.previewTarget = choosePassTarget(p, dx, dy, 0.85);
+    const directed = mag > 0.2;
+    const dx = directed ? this.moveX : Math.cos(p.facing);
+    const dy = directed ? this.moveY : Math.sin(p.facing);
+    const target = passReceiver(p, dx, dy, directed);
+    this.previewTarget = target;
+    if (target) {
+      this.previewPoint = null;
+      return;
+    }
+    const n = Math.hypot(dx, dy) || 1;
+    const len = 150 + (this.passHold > this.tapPass ? clamp((this.passHold - 0.1) / 0.8, 0, 1) : 0) * 420;
+    this.previewPoint = {
+      x: clamp(p.x + (dx / n) * len, 20, PITCH_L - 20),
+      y: clamp(p.y + (dy / n) * len, 20, PITCH_W - 20),
+    };
   }
 
   doPass(m: Match, p: Player, swipe: AimSwipe | null, hold: number) {
@@ -232,10 +259,9 @@ export class HumanController {
     const directed = swipe !== null || mag > 0.2;
     const lofted = swipe ? swipe.power > 0.78 : hold > this.tapPass;
     const power = swipe ? swipe.power : clamp((hold - 0.1) / 0.8, 0, 1);
-    // A plain tap never passes to nobody: widen the cone before giving up. Only swipes and lofted
-    // passes are allowed to go into empty space.
-    let target = choosePassTarget(p, dx, dy, swipe ? 0.93 : directed ? 0.75 : 0.2);
-    if (!target && !swipe && !lofted) target = choosePassTarget(p, dx, dy, directed ? -0.2 : -1);
+    // A stick or a swipe is an explicit aim: only a teammate in that direction is assisted.
+    // Empty space is used only for that aim. An unaimed tap stays a smart pass, previewed first.
+    const target = swipe ? choosePassTarget(p, dx, dy, 0.7) : passReceiver(p, dx, dy, directed);
     const throwing = m.state === 'taking' && m.restart?.type === 'throwin';
     const err = 0.028 * (1 + m.pressureOn(p) * 0.8);
     if (target) {
@@ -306,10 +332,10 @@ export class HumanController {
       // Controlled placed shot: lower pace, better accuracy, aimed away from the keeper unless directed.
       power = 0.5;
       finesse = true;
-      aimY = Math.abs(this.moveY) > 0.3 ? CY + Math.sign(this.moveY) * (GOAL_HALF - 16) : farSideAim(p);
+      aimY = this.shotAimY(p, hold);
     } else {
       power = clamp(hold / SHOT_CHARGE_TIME, 0, 1);
-      aimY = Math.abs(this.moveY) > 0.3 ? CY + Math.sign(this.moveY) * (GOAL_HALF - 13) : CY + rand(-16, 16);
+      aimY = this.shotAimY(p, hold);
     }
     if (m.state === 'taking' && m.restart?.type === 'corner') {
       // C on a corner = whipped cross into the box.
@@ -345,7 +371,7 @@ export class HumanController {
     t.stop();
     if (Math.hypot(this.moveX, this.moveY) > 0.2) t.facing = Math.atan2(this.moveY, this.moveX);
     this.takingTimer += dt;
-    this.updatePreview(dt, t);
+    this.updatePreview(t);
     if (r.type === 'goalkick') return;
     if (input.passReleased && this.passHold >= 0) {
       this.doPass(m, t, input.passSwipe, this.passHold);
@@ -433,6 +459,17 @@ export function bestSwitch(team: Team, m: Match, exclude: Player | null, rank: n
   }
   if (ranked.length === 0) return exclude;
   return ranked[rank % ranked.length];
+}
+
+/**
+ * Who an assisted pass goes to.
+ * Directed (stick held): only a teammate within about 66° of the stick. Nobody there means the
+ * pass goes into the space being aimed at, never to a teammate behind the aim.
+ * Undirected tap: the best teammate ahead, or a close support player, and the preview shows which.
+ */
+export function passReceiver(p: Player, dx: number, dy: number, directed: boolean) {
+  if (directed) return choosePassTarget(p, dx, dy, 0.4);
+  return choosePassTarget(p, dx, dy, 0.15) ?? choosePassTarget(p, dx, dy, -0.2);
 }
 
 /** Assisted pass target in a direction (minCos is the cone tightness). */
