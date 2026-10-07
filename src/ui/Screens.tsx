@@ -26,12 +26,12 @@ export function MainMenu(p: MenuProps) {
   const desc = DIFFICULTIES.find(d => d.value === p.difficulty)!.desc;
   return (
     <div className="absolute inset-0 z-30 flex items-stretch bg-gradient-to-r from-slate-950/95 via-slate-950/70 to-slate-950/10 text-white">
-      <div className="flex h-full w-full max-w-[520px] flex-col justify-center gap-[2.2vh] px-[max(20px,4vw,env(safe-area-inset-left))] py-[3vh]">
+      <div className="flex h-full w-full max-w-[max(500px,54vh)] flex-col justify-center gap-[2.2vh] py-[3vh] pl-[max(20px,min(4vw,64px),env(safe-area-inset-left))] pr-5">
         <div className="leading-none">
           <div className="text-[clamp(11px,1.8vh,15px)] font-black uppercase tracking-[0.5em] text-sky-300">Football arcade · 5 contre 5</div>
           <h1 className="mt-[1vh] font-black italic tracking-tight">
             <span className="block text-[clamp(26px,7vh,58px)] text-white">eFOOTBALL</span>
-            <span className="block bg-gradient-to-r from-amber-200 via-amber-400 to-orange-500 bg-clip-text text-[clamp(38px,12vh,104px)] text-transparent drop-shadow-[0_6px_20px_rgba(251,191,36,0.25)]">
+            <span className="block bg-gradient-to-r from-amber-200 via-amber-400 to-orange-500 bg-clip-text text-[clamp(38px,11vh,96px)] text-transparent drop-shadow-[0_6px_20px_rgba(251,191,36,0.25)]">
               STRIKER
             </span>
           </h1>
@@ -40,13 +40,13 @@ export function MainMenu(p: MenuProps) {
         <button
           type="button"
           onClick={p.onPlay}
-          className="group relative w-full max-w-[400px] overflow-hidden rounded-xl bg-gradient-to-b from-amber-300 to-amber-500 py-[clamp(10px,2.6vh,20px)] text-[clamp(20px,4.4vh,32px)] font-black italic tracking-wide text-slate-950 shadow-[0_6px_0_#b45309,0_18px_40px_rgba(251,191,36,0.25)] transition hover:brightness-110 active:translate-y-1 active:shadow-[0_2px_0_#b45309]"
+          className="group relative w-full max-w-[max(400px,40vh)] overflow-hidden rounded-xl bg-gradient-to-b from-amber-300 to-amber-500 py-[clamp(10px,2.6vh,20px)] text-[clamp(20px,4.4vh,32px)] font-black italic tracking-wide text-slate-950 shadow-[0_6px_0_#b45309,0_18px_40px_rgba(251,191,36,0.25)] transition hover:brightness-110 active:translate-y-1 active:shadow-[0_2px_0_#b45309]"
         >
           ▶ JOUER
           <span className="absolute inset-y-0 -left-1/3 w-1/3 skew-x-[-20deg] bg-white/30 transition-transform duration-700 group-hover:translate-x-[420%]" />
         </button>
 
-        <div className="w-full max-w-[400px]">
+        <div className="w-full max-w-[max(400px,40vh)]">
           <div className="mb-[0.8vh] text-[clamp(9px,1.6vh,12px)] font-black uppercase tracking-[0.3em] text-white/60">Difficulté</div>
           <div className="grid grid-cols-3 gap-1.5">
             {DIFFICULTIES.map(d => (
@@ -64,7 +64,7 @@ export function MainMenu(p: MenuProps) {
           <div className="mt-[0.8vh] min-h-[2.6em] text-[clamp(10px,1.7vh,13px)] leading-snug text-white/60">{desc}</div>
         </div>
 
-        <div className="flex w-full max-w-[400px] flex-wrap items-center gap-1.5">
+        <div className="flex w-full max-w-[max(400px,40vh)] flex-wrap items-center gap-1.5">
           <span className="mr-1 text-[clamp(9px,1.6vh,12px)] font-black uppercase tracking-[0.3em] text-white/60">Durée</span>
           {DURATIONS.map(d => (
             <button
@@ -77,10 +77,10 @@ export function MainMenu(p: MenuProps) {
               {d} MIN
             </button>
           ))}
-          <div className="ml-auto flex gap-1.5">
-            <MenuChip onClick={p.onControls}>COMMANDES</MenuChip>
-            <MenuChip onClick={p.onToggleSound}>{p.muted ? 'SON OFF' : 'SON ON'}</MenuChip>
-          </div>
+        </div>
+        <div className="flex gap-1.5">
+          <MenuChip onClick={p.onControls}>COMMANDES</MenuChip>
+          <MenuChip onClick={p.onToggleSound}>{p.muted ? 'SON OFF' : 'SON ON'}</MenuChip>
         </div>
         <div className="text-[10px] font-semibold text-white/40">{p.touch ? 'Mode paysage · joystick à gauche, glissez depuis PASSE / TIR pour orienter.' : 'WASD / flèches · X passe · C tir · Alt sprint · Shift droit changer · Échap pause'}</div>
       </div>
