@@ -46,7 +46,7 @@ function trial(difficulty, { dx, dy, aim, power, finesse = false, error = 8 }) {
   return touched ? 'save' : 'miss';
 }
 
-function run(name, difficulty, gen, n = 80) {
+function run(name, difficulty, gen, n = 120) {
   const r = { goal: 0, save: 0, miss: 0 };
   let done = 0;
   while (done < n) {
@@ -67,7 +67,7 @@ const side = () => (Math.random() < 0.5 ? -1 : 1);
 for (const diff of ['amateur', 'pro', 'legend']) {
   const placed = run('placed powerful shot to the far post', diff, () => {
     const s = side();
-    return { dx: 320 + Math.random() * 100, dy: s * (40 + Math.random() * 100), aim: CY - s * (GOAL_HALF - 14), power: 0.8, error: 14 };
+    return { dx: 300 + Math.random() * 80, dy: s * (40 + Math.random() * 100), aim: CY - s * (GOAL_HALF - 14), power: 0.8, error: 14 };
   });
   const weak = run('weak central shot', diff, () => ({ dx: 280 + Math.random() * 80, dy: (Math.random() - 0.5) * 80, aim: CY + (Math.random() - 0.5) * 16, power: 0.12 }));
   const finesse = run('finesse placed shot', diff, () => {
@@ -75,8 +75,14 @@ for (const diff of ['amateur', 'pro', 'legend']) {
     return { dx: 240 + Math.random() * 80, dy: s * (60 + Math.random() * 80), aim: CY - s * (GOAL_HALF - 16), power: 0.5, finesse: true, error: 14 };
   });
 
+  const long = run('powerful placed shot from 40 m', diff, () => {
+    const s = side();
+    return { dx: 540 + Math.random() * 60, dy: s * (30 + Math.random() * 60), aim: CY - s * (GOAL_HALF - 14), power: 0.95, error: 14 };
+  });
+
   assertUnlessStats(placed.conv > 0.45, `${diff}: well-placed powerful shots beat the keeper often enough (${(placed.conv * 100).toFixed(0)}%)`);
   assertUnlessStats(placed.conv < 0.95, `${diff}: the keeper still saves some well-placed shots (${(placed.conv * 100).toFixed(0)}%)`);
   assertUnlessStats(weak.conv < 0.28, `${diff}: weak central shots are mostly saved (${(weak.conv * 100).toFixed(0)}%)`);
+  assertUnlessStats(long.conv < placed.conv - 0.15, `${diff}: long-range efforts are saved more often than placed shots from the box edge (${(long.conv * 100).toFixed(0)}% vs ${(placed.conv * 100).toFixed(0)}%)`);
   assertUnlessStats(finesse.conv > 0.08, `${diff}: finesse shots to the corner can score (${(finesse.conv * 100).toFixed(0)}%)`);
 }

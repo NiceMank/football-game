@@ -158,6 +158,8 @@ function shooterSetup() {
   const { m, p } = carrierSetup();
   p.x = 1180;
   p.y = CY;
+  // Defenders out of the way: these tests are about the shot itself, not about being tackled mid-charge.
+  for (const o of m.away.players) if (!o.isGK) o.x = 400;
   m.away.keeper.x = 1470;
   m.away.keeper.y = CY;
   m.attachBall(FIXED_DT);
