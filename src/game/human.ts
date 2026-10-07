@@ -30,8 +30,11 @@ export class HumanController {
   previewTarget: Player | null = null;
   private previewTimer = 0;
   takingTimer = 0;
+  /** A tackle pressed while the carrier is still taking his touch fires as soon as it can. */
+  private tackleBuffer = 0;
 
   reset() {
+    this.tackleBuffer = 0;
     this.passHold = -1;
     this.shootHold = -1;
     this.charge = 0;
@@ -143,9 +146,15 @@ export class HumanController {
     }
     if (input.dashPressed && mag > 0.2) p.sprint = true;
 
+    if (!defending) this.tackleBuffer = 0;
     if (defending) {
-      if (input.passPressed) {
-        if (dist(p.x, p.y, b.x, b.y) < PLAYER_R + 26) tackle(m, p, HUMAN_TACKLE);
+      if (input.passPressed) this.tackleBuffer = 0.3;
+      if (this.tackleBuffer > 0) {
+        this.tackleBuffer -= dt;
+        if (b.ownerLock <= 0 && dist(p.x, p.y, b.x, b.y) < PLAYER_R + 26) {
+          tackle(m, p, HUMAN_TACKLE);
+          this.tackleBuffer = 0;
+        }
       }
       if (input.shootPressed) {
         const dx = mag > 0.2 ? mx : b.x - p.x;
@@ -220,7 +229,10 @@ export class HumanController {
     const directed = swipe !== null || mag > 0.2;
     const lofted = swipe ? swipe.power > 0.78 : hold > TAP_PASS;
     const power = swipe ? swipe.power : clamp((hold - 0.1) / 0.8, 0, 1);
-    const target = choosePassTarget(p, dx, dy, swipe ? 0.93 : directed ? 0.75 : 0.2);
+    // A plain tap never passes to nobody: widen the cone before giving up. Only swipes and lofted
+    // passes are allowed to go into empty space.
+    let target = choosePassTarget(p, dx, dy, swipe ? 0.93 : directed ? 0.75 : 0.2);
+    if (!target && !swipe && !lofted) target = choosePassTarget(p, dx, dy, directed ? -0.2 : -1);
     const throwing = m.state === 'taking' && m.restart?.type === 'throwin';
     const err = 0.028 * (1 + m.pressureOn(p) * 0.8);
     if (target) {
