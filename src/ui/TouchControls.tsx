@@ -9,8 +9,13 @@ interface Props {
 
 const JOY_RADIUS = 58;
 const DEAD_ZONE = 0.14;
-const SWIPE_MIN = 22;
-const SWIPE_FULL = 150;
+/** Below SWIPE_MIN px a release counts as a tap, so a thumb wobble never becomes a directed kick. */
+const SWIPE_MIN = 36;
+const SWIPE_FULL = 175;
+
+function swipePowerOf(len: number) {
+  return Math.min(1, Math.max(0.15, 0.15 + (0.85 * (len - SWIPE_MIN)) / (SWIPE_FULL - SWIPE_MIN)));
+}
 
 interface Swipe {
   id: number;
@@ -141,7 +146,7 @@ export function TouchControls({ inputRef, hud }: Props) {
       const wx = dx;
       const wy = dy / TILT;
       const n = Math.hypot(wx, wy) || 1;
-      aim = { dx: wx / n, dy: wy / n, power: Math.min(1, Math.max(0.15, len / SWIPE_FULL)) };
+      aim = { dx: wx / n, dy: wy / n, power: swipePowerOf(len) };
     }
     if (s.kind === 'pass') {
       input.pass = false;
@@ -178,7 +183,7 @@ export function TouchControls({ inputRef, hud }: Props) {
   const shootLabel = defending ? 'GLISSÉ' : corner ? 'CENTRE' : throwin ? 'LONGUE' : 'TIR';
 
   const swipeLen = swipe ? Math.hypot(swipe.x - swipe.x0, swipe.y - swipe.y0) : 0;
-  const swipePower = Math.min(1, swipeLen / SWIPE_FULL);
+  const swipePower = swipeLen >= SWIPE_MIN ? swipePowerOf(swipeLen) : 0;
 
   return (
     <div className="pointer-events-none absolute inset-0 z-20 select-none" style={{ touchAction: 'none' }}>
@@ -237,7 +242,7 @@ export function TouchControls({ inputRef, hud }: Props) {
         </div>
       </div>
 
-      {swipe && swipeLen > 8 && (
+      {swipe && swipeLen >= SWIPE_MIN && (
         <svg className="pointer-events-none fixed inset-0 h-full w-full">
           <defs>
             <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
