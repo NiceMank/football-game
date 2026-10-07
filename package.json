@@ -11,10 +11,8 @@
     "test": "node tests/controls.mjs && node tests/rules.mjs && node tests/goalkeepers.mjs && node tests/full-match.mjs"
   },
   "dependencies": {
-    "clsx": "2.1.1",
     "react": "19.2.6",
-    "react-dom": "19.2.6",
-    "tailwind-merge": "3.4.0"
+    "react-dom": "19.2.6"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.17",

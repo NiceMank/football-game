@@ -1,54 +1,73 @@
 # ⚽ eFootball Striker
 
-Prototype de football arcade construit avec **React**, **TypeScript**, **Vite** et **Canvas 2D**.
-
-## Gameplay actuellement opérationnel
-
-Le moteur conserve la base Phase 0 (terrain monde **800 × 1200**, viewport **480 × 720**, quatre joueurs de champ et un gardien visuel par équipe, caméra clampée et contrôles clavier/tactiles) et propose :
-
-- déplacement humain, dribble avec ballon maintenu devant/sur le côté, possession par joueur, récupération conditionnelle et verrou anti-bascule ;
-- passes humaines orientées avec choix du partenaire selon la visée, la distance, la progression, l’espace et le couloir d’adversaires ; réception anticipée et changement automatique de joueur actif ;
-- tirs chargés avec puissance, visée assistée, zone de tir parfait et distinctions de puissance ;
-- **équipe adverse tactique** : quand elle défend, un seul joueur presse tandis que les autres couvrent les espaces, l’axe et les joueurs home ; le presser tente des tacles avec distance, réaction, cooldown et réussite probabiliste ;
-- quand away récupère le ballon, elle passe en mode attaque : le porteur avance dans un couloir libre, peut passer sous pression à un coéquipier mieux placé, ou tirer près de la surface si l’angle et la pression le permettent ; les passes ont une précision variable et les tirs visent plusieurs zones du but ;
-- changement immédiat de phase après perte/récupération et retour des joueurs non contrôlés home à leur formation ;
-- buts, tirs à côté, pulsation de célébration en coordonnées monde et coup d’envoi à l’autre équipe.
-
-### Difficulté adverse
-
-Choix avant le match : **Amateur**, **Pro** ou **Légende**. La difficulté influe sur les délais de réaction et de décision, l’agressivité/portée du pressing, la sélection et la précision des passes, la précision des tirs et la réussite des tacles. Elle **n’augmente pas la vitesse des joueurs**.
-
-La simulation utilise un pas fixe de `1/120 s` et toutes les vitesses/frictions sont intégrées avec `dt`. La friction du ballon reste `Math.pow(0.5, dt)`.
-
-## Commandes
-
-- **Déplacement clavier** : flèches, `WASD` ou `ZQSD`.
-- **Action clavier** : pression courte sur `Espace`, `Entrée`, `J` ou `X` = passe ; maintenir puis relâcher = tir chargé. Relâcher dans la zone verte pour un tir parfait.
-- **Mobile** : glisser sur le côté gauche pour déplacer le joueur ; appuyer brièvement sur **PASSE / TIR** pour passer ou maintenir le bouton pour charger un tir.
-- **Pause / reprise** : `P`, `Échap` ou le bouton pause.
-- **Recommencer** : `R`.
-
-## Organisation du moteur
-
-`src/game/engine.ts` contient l’état du match et la simulation : contrôle humain, IA adverse défensive/offensive, passe/réception, tir, collisions, possession, score, caméra et rendu Canvas. `src/App.tsx` conserve la couche React : entrées, boucle fixe, HUD, difficulté et interface tactile. `src/game/sfx.ts` fournit des sons Web Audio facultatifs.
-
-Les joueurs adverses gardent leur vitesse définie ; la difficulté améliore les décisions et la qualité d’exécution plutôt que les statistiques de déplacement.
-
-## Limites actuelles
-
-Les gardiens sont dessinés mais n’ont pas encore de comportement de déplacement/parade. Pas de chronomètre, touches/corners ou règles complètes de match. Le système tactique porte sur les joueurs de champ.
+Football arcade **5 contre 5** en vue de dessus légèrement oblique, construit avec **React 19**, **TypeScript**, **Vite** et **Canvas 2D** (aucun asset externe : terrain, joueurs, ballon, sons et foule sont générés en code).
 
 ## Lancer le projet
 
 ```bash
 npm install
-npm run dev
+npm run dev      # serveur de développement
+npm run build    # build de production (un seul fichier dist/index.html)
+npm test         # tests du moteur (Node + esbuild)
 ```
 
-Build de production :
+## Commandes
 
-```bash
-npm run build
-```
+### Clavier
 
-L’audit de la base et les décisions de conservation de l’architecture sont documentés dans [`PHASE_0_ARCHITECTURE.md`](./PHASE_0_ARCHITECTURE.md).
+| Touche | Action |
+| --- | --- |
+| `WASD` / flèches (`ZQSD` sur AZERTY) | déplacement |
+| `X` | passe (tap = passe intelligente, maintenir = passe lobée / en profondeur) · en défense : tacle, maintenir = pressing |
+| `C` | tir (tap = tir placé, maintenir = tir chargé, haut/bas = viser un poteau) · en défense : tacle glissé · sur corner : centre |
+| `Alt` | sprint / crochet (pousse le ballon devant) |
+| `Shift droit` | changer de joueur (appuis répétés = joueur suivant) |
+| `Échap` | pause |
+| `R` | recommencer |
+
+### Mobile (paysage obligatoire)
+
+- **Joystick analogique** flottant à gauche (zone morte, retour visuel).
+- **PASSE** : tap = passe auto intelligente ; glisser = passe orientée, la longueur du glissé règle la puissance.
+- **TIR** : tap = tir contrôlé ; maintenir = charge ; glisser = visée (premier poteau, centre, second poteau) et puissance.
+- **SPRINT** : maintenir pour accélérer (consomme l'endurance).
+- **SWITCH** : joueur le mieux placé.
+- En portrait, un écran « TOURNEZ VOTRE TÉLÉPHONE » bloque et met le match en pause ; au lancement, le jeu tente le plein écran et `screen.orientation.lock('landscape')`.
+
+## Règles gérées
+
+Coup d'envoi, but (ballon entièrement au-delà de la ligne, entre les poteaux, sous la barre), poteaux et barre, touche, corner, sortie de but, fautes (tacles ratés, tacles glissés sur l'homme), coup franc avec mur et distance, penalty, mi-temps avec changement de côté, fin de match. Règle IFAB 2026/27 : un gardien qui garde le ballon en main plus de **8 secondes** concède un **corner**. Le gardien de l'équipe humaine est relancé par le joueur (`X` main, `C` dégagement) avec un compte à rebours à l'écran. Le hors-jeu n'est pas simulé.
+
+## Architecture (`src/game`)
+
+| Module | Rôle |
+| --- | --- |
+| `match.ts` | machine d'états du match (setup → taking → live → goal / halftime / fulltime), possession, contacts ballon, chrono, HUD |
+| `ball.ts` | physique du ballon : gravité, rebonds, frictions sol/air, effet, prédiction, traînée |
+| `player.ts` | joueur : stats, accélération limitée, endurance, orientation, glissade |
+| `team.ts` | équipe : losange 1-2-1, maillots, rôles tactiques (presseur, couverture…), plan d'attaque |
+| `goalkeeper.ts` | gardien : perception retardée, temps de réaction, lecture bruitée, plongeon à vitesse et allonge finies, captation / parade / erreur |
+| `ai.ts` | IA d'équipe : pressing + couverture + marquage, soutien et appels, plans (construction, direct, côtés, contre), décisions du porteur |
+| `human.ts` | traduction des entrées (clavier / tactile) en actions, tirs et passes en une touche, changement de joueur |
+| `actions.ts` | passes, lobs, centres, tirs, dégagements, touches, tacles |
+| `rules.ts` | sorties de balle, buts, cadre, fautes, placement sur coups de pied arrêtés |
+| `camera.ts` | caméra anticipative qui garde le but visible près de la surface |
+| `renderer.ts` | rendu Canvas pseudo-3D (terrain, tribunes, buts et filets, joueurs, ballon, marqueurs, mini-carte) |
+| `effects.ts` | particules (pool), secousses, flash, bandeaux |
+| `input.ts` / `sfx.ts` | clavier (codes physiques) et sons Web Audio procéduraux |
+| `profiles.ts` | profils de difficulté |
+
+La simulation tourne à pas fixe (`1/120 s`), les décisions IA sont cadencées par minuteurs, et la boucle de rendu ne fait pas d'allocation par image.
+
+### Difficulté
+
+**Amateur / Pro / Légende** modifie surtout la qualité des décisions (réaction, vision, anticipation, pressing, précision des passes et tirs). La vitesse des joueurs ne change pas et les gardiens restent faillibles à tous les niveaux.
+
+## Tests
+
+`npm test` exécute :
+
+- `tests/controls.mjs` : mapping clavier (Shift droit, Alt, X, C, Échap, R, J/K/L inactifs), passe orientée, passe lobée, passe et tir au glissé, tir chargé, visée des poteaux, crochet, changement de joueur ;
+- `tests/rules.mjs` : but / pas but, barre, sortie de but vs corner, touche, coup franc, penalty, cycle de chaque coup de pied arrêté, règle des 8 secondes ;
+- `tests/goalkeepers.mjs` : statistiques d'arrêts par difficulté (tirs puissants placés, tirs faibles centraux, tirs enroulés) ;
+- `tests/full-match.mjs` : matchs complets IA contre IA et humain contre IA, rythme, variété des plans et des arrêts de jeu, performance.
