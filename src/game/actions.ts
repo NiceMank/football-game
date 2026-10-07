@@ -87,7 +87,7 @@ export interface ShotOptions {
 export function shoot(m: Match, p: Player, aimY: number, power: number, o: ShotOptions = {}) {
   const b = m.ball;
   const team = p.team;
-  const gx = team.oppGoalX + team.dir * BALL_R * 3;
+  const gx = team.oppGoalX;
   power = clamp(power, 0, 1);
   const pressure = m.pressureOn(p);
   const baseErr = o.error ?? 16;

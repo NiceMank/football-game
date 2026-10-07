@@ -138,9 +138,21 @@ export class Match {
 
   gainPossession(p: Player) {
     const b = this.ball;
-    if (b.kicker && b.kicker.team === p.team && b.kicker !== p && (b.kind === 'pass' || b.kind === 'lob' || b.kind === 'cross' || b.kind === 'throw')) {
-      p.team.stats.passesCompleted++;
+    const team = p.team;
+    const completed = b.kicker && b.kicker.team === team && b.kicker !== p && (b.kind === 'pass' || b.kind === 'lob' || b.kind === 'cross' || b.kind === 'throw');
+    p.receivedFrom = completed ? b.kicker : null;
+    if (completed) {
+      team.stats.passesCompleted++;
       this.kickCompleted[b.kind]++;
+    }
+    if (this.lastPossession !== team) {
+      team.progressMark = team.local(p.x);
+      team.circulation = 0;
+    } else if (team.local(p.x) > team.progressMark + 0.05) {
+      team.progressMark = team.local(p.x);
+      team.circulation = 0;
+    } else if (completed) {
+      team.circulation++;
     }
     b.owner = p;
     b.held = false;
@@ -556,6 +568,7 @@ export class Match {
     }
     let best: Player | null = null;
     let bestD = 1e9;
+    const bs = b.speed;
     for (const p of this.all) {
       if (p.isGK) continue;
       if (p.stun > 0 && p.slide <= 0) continue;
@@ -564,6 +577,8 @@ export class Match {
       const reach = CONTROL_DIST + (b.passTarget === p ? 5 : 0);
       const d = dist(p.x, p.y, b.x, b.y);
       if (d > reach || b.z > PLAYER_H + 6) continue;
+      // A moving ball can only be met from in front: once it is past a player he has to chase it.
+      if (bs > 150 && ((p.x - b.x) * b.vx + (p.y - b.y) * b.vy) / bs < -3) continue;
       if (d < bestD) {
         bestD = d;
         best = p;

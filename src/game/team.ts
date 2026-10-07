@@ -69,6 +69,10 @@ export class Team {
   interceptor: Player | null = null;
   /** Pending defensive reassignment delay (models reaction time). */
   reassignDelay = 0;
+  /** Completed passes in this possession that did not gain ground (drives impatience). */
+  circulation = 0;
+  /** Furthest local x reached by the ball in this possession. */
+  progressMark = 0;
 
   constructor(cfg: TeamConfig, dir: 1 | -1, profile: AIProfile) {
     this.side = cfg.side;
@@ -116,7 +120,10 @@ export class Team {
     this.planTimer = 0;
     this.wonAt = -99;
     this.lostAt = -99;
+    this.circulation = 0;
+    this.progressMark = 0;
     for (const p of this.players) {
+      p.receivedFrom = null;
       p.stamina = 1;
       p.stun = 0;
       p.slide = 0;

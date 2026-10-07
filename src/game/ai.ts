@@ -216,6 +216,13 @@ function updatePlayerAI(p: Player, team: Team, m: Match, dt: number) {
     p.steerTo(tgtX, tgtY, 1, dist(p.x, p.y, tgtX, tgtY) > 70, 10);
     return;
   }
+  if (b.free && b.kind === 'shot' && b.kicker && b.kicker.team === team && b.kicker !== p && team.local(p.x) > 0.55 && p.role !== 'DEF') {
+    // Follow the shot in for a rebound, toward the far side of the goal mouth.
+    p.intent = 'run';
+    const far = b.vy * team.dir >= 0 ? 1 : -1;
+    p.steerTo(team.oppGoalX - team.dir * (p.role === 'FWD' ? 70 : 120), CY + far * (p.role === 'FWD' ? 30 : -50), 1, true, 10);
+    return;
+  }
   if (b.free && (team.chaser === p || team.interceptor === p)) {
     p.intent = team.chaser === p ? 'chase' : 'intercept';
     interceptTime(p, m);
@@ -546,6 +553,9 @@ function bestPass(p: Player, team: Team, m: Match) {
   const plan = team.plan;
   passPick.score = -9;
   passPick.target = null;
+  const pressure = m.pressureOn(p);
+  // Sterile circulation makes the team progressively more ambitious (build-up -> acceleration).
+  const impatience = clamp(team.circulation / 4, 0, 1.25);
   const wideCarrier = Math.abs(p.y - CY) > 210 && team.local(p.x) > 0.74;
   for (const r of team.players) {
     if (r === p || r.busy) continue;
@@ -578,10 +588,15 @@ function bestPass(p: Player, team: Team, m: Match) {
         passPickLY = lly;
       }
     }
+    s += prog * impatience * 0.7 * (1 - risk);
+    if (prog < -0.03 && pressure < 0.55) s -= 0.06 + impatience * 0.14;
+    // No instant give-and-go back to the passer unless he is running into space or we are pressed.
+    if (r === p.receivedFrom && p.holdTimer < 1.2 && pressure < 0.6 && r.intent !== 'run') s -= 0.24;
+    if (d0 > 100 && d0 < 280) s += 0.06;
     switch (plan) {
       case 'build':
         s += prog * 0.3 + threat * 0.25 - risk * 0.15;
-        if (Math.abs(ly - p.y) > 280) s += 0.12;
+        if (Math.abs(ly - p.y) > 280 && team.circulation < 3) s += 0.08;
         break;
       case 'direct':
         s += prog * 0.9 + threat * 0.35;
@@ -684,6 +699,11 @@ function carrierAI(p: Player, team: Team, m: Match, dt: number) {
 /** Returns true when the ball has been released. */
 function decide(p: Player, team: Team, m: Match, pressure: number): boolean {
   const prof = team.profile;
+  if (team.circulation >= 5 && (team.plan === 'build' || team.plan === 'wing') && Math.random() < 0.5 + prof.vision * 0.4) {
+    team.plan = 'direct';
+    team.planTimer = rand(4, 6);
+    m.planCount.direct++;
+  }
   const plan = team.plan;
   const q = shotQuality(p, m);
   const aimY = shotAim.y;
@@ -706,6 +726,7 @@ function decide(p: Player, team: Team, m: Match, pressure: number): boolean {
   const dribbleS = bestDribble(p, team);
   let dribbleValue = dribbleS * (0.55 + p.dribbleStat * 0.25) * (pressure > 0.6 ? 0.65 : 1);
   if (plan === 'build') dribbleValue *= 0.75;
+  if (pressure < 0.45 && Math.abs(Math.atan2(p.dribbleY, p.dribbleX * team.dir)) < 0.7) dribbleValue += clamp(team.circulation / 4, 0, 1) * 0.15;
   // Just received and nobody around: take a touch and look up instead of an instant pass.
   if (p.holdTimer < 0.5 && pressure < 0.25 && plan !== 'counter') dribbleValue += 0.18;
 

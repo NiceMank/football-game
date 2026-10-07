@@ -56,6 +56,8 @@ export class Player {
   noiseY = 0;
   markTarget: Player | null = null;
   holdTimer = 0;
+  /** Teammate who passed this player the ball (avoids instant ping-pong). */
+  receivedFrom: Player | null = null;
   dribbleX = 0;
   dribbleY = 0;
   tackleThink = 0;
