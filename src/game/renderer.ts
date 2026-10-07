@@ -473,28 +473,25 @@ function drawMarkers(ctx: CanvasRenderingContext2D, m: Match, cam: Camera) {
   if (team && team.controlled) {
     const p = team.controlled;
     const z = cam.zoom;
-    ctx.fillStyle = 'rgba(253,224,71,0.18)';
-    ctx.beginPath();
-    ctx.ellipse(cam.sx(p.x), cam.sy(p.y), 17 * z, 17 * z * TILT, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ring(ctx, cam, p.x, p.y, 17, '#fde047', 2.5);
-    // Stamina arc.
-    ctx.strokeStyle = p.stamina > 0.35 ? '#4ade80' : p.stamina > 0.15 ? '#facc15' : '#f87171';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.ellipse(cam.sx(p.x), cam.sy(p.y), 22 * z, 22 * z * TILT, 0, Math.PI * 0.6, Math.PI * 0.6 + Math.PI * 1.8 * p.stamina);
-    ctx.stroke();
-    // Facing tick.
+    // Discreet ground marker: thin ring plus a small facing notch.
+    ring(ctx, cam, p.x, p.y, 14, 'rgba(253,224,71,0.95)', 1.8);
+    if (p.stamina < 0.6) {
+      ctx.strokeStyle = p.stamina > 0.3 ? 'rgba(250,204,21,0.8)' : 'rgba(248,113,113,0.9)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.ellipse(cam.sx(p.x), cam.sy(p.y), 18 * z, 18 * z * TILT, 0, Math.PI * 0.6, Math.PI * 0.6 + Math.PI * 1.8 * p.stamina);
+      ctx.stroke();
+    }
     const fx = Math.cos(p.facing);
     const fy = Math.sin(p.facing);
     ctx.fillStyle = '#fde047';
     ctx.beginPath();
-    const tipX = cam.sx(p.x + fx * 27);
-    const tipY = cam.sy(p.y + fy * 27);
-    const lx = cam.sx(p.x + fx * 20 - fy * 6);
-    const ly = cam.sy(p.y + fy * 20 + fx * 6);
-    const rx = cam.sx(p.x + fx * 20 + fy * 6);
-    const ry = cam.sy(p.y + fy * 20 - fx * 6);
+    const tipX = cam.sx(p.x + fx * 21);
+    const tipY = cam.sy(p.y + fy * 21);
+    const lx = cam.sx(p.x + fx * 16 - fy * 4);
+    const ly = cam.sy(p.y + fy * 16 + fx * 4);
+    const rx = cam.sx(p.x + fx * 16 + fy * 4);
+    const ry = cam.sy(p.y + fy * 16 - fx * 4);
     ctx.moveTo(tipX, tipY);
     ctx.lineTo(lx, ly);
     ctx.lineTo(rx, ry);
@@ -509,7 +506,7 @@ function drawMarkers(ctx: CanvasRenderingContext2D, m: Match, cam: Camera) {
     ring(ctx, cam, b.passTargetX, b.passTargetY, 10 + Math.sin(t * 10) * 2, r.team.side === 'home' ? 'rgba(96,165,250,0.8)' : 'rgba(248,113,113,0.6)', 2, 4, t * 20);
   }
   if (b.owner && (!team || b.owner.team !== team)) {
-    ring(ctx, cam, b.owner.x, b.owner.y, 16, 'rgba(248,113,113,0.7)', 2);
+    ring(ctx, cam, b.owner.x, b.owner.y, 14, 'rgba(248,113,113,0.55)', 1.5);
   }
   // Restart aim arrow for the human taker.
   if (team && m.state === 'taking' && m.restart && m.restart.team === team && m.restart.type !== 'goalkick') {
@@ -814,6 +811,9 @@ function drawParticles(ctx: CanvasRenderingContext2D, m: Match, cam: Camera) {
   ctx.globalAlpha = 1;
 }
 
+let tagPlayer: Player | null = null;
+let tagSince = 0;
+
 function drawOverheads(ctx: CanvasRenderingContext2D, m: Match, cam: Camera) {
   const team = m.humanTeam;
   const z = cam.zoom;
@@ -841,24 +841,33 @@ function drawOverheads(ctx: CanvasRenderingContext2D, m: Match, cam: Camera) {
     ctx.restore();
     return;
   }
-  // Chevron + number tag.
+  // Small chevron; the name tag only appears briefly after the controlled player changes.
+  if (tagPlayer !== p) {
+    tagPlayer = p;
+    tagSince = m.time;
+  }
   ctx.fillStyle = '#fde047';
   ctx.beginPath();
-  ctx.moveTo(sx, sy + 7);
-  ctx.lineTo(sx - 6, sy);
-  ctx.lineTo(sx + 6, sy);
+  ctx.moveTo(sx, sy + 5);
+  ctx.lineTo(sx - 4.5, sy);
+  ctx.lineTo(sx + 4.5, sy);
   ctx.closePath();
   ctx.fill();
-  const label = `${p.number} ${p.name.toUpperCase()}`;
-  ctx.font = '800 11px system-ui, sans-serif';
-  const w = ctx.measureText(label).width + 10;
-  ctx.fillStyle = 'rgba(2,6,23,0.72)';
-  roundRect(ctx, sx - w / 2, sy - 19, w, 15, 4);
-  ctx.fill();
-  ctx.fillStyle = '#fef9c3';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, sx, sy - 11.5);
+  const tagAge = m.time - tagSince;
+  if (tagAge >= 0 && tagAge < 1.4) {
+    ctx.globalAlpha = clamp((1.4 - tagAge) / 0.4, 0, 1);
+    const label = `${p.number} ${p.name.toUpperCase()}`;
+    ctx.font = '700 10px system-ui, sans-serif';
+    const w = ctx.measureText(label).width + 8;
+    ctx.fillStyle = 'rgba(2,6,23,0.6)';
+    roundRect(ctx, sx - w / 2, sy - 16, w, 13, 4);
+    ctx.fill();
+    ctx.fillStyle = '#fef9c3';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, sx, sy - 9.5);
+    ctx.globalAlpha = 1;
+  }
 
   // Charge bar (shot or lofted pass).
   const h = m.human;

@@ -671,7 +671,9 @@ export class Match {
       fx = (b.x + this.lastScorer.x) / 2;
       fy = (b.y + this.lastScorer.y) / 2;
     } else if (owner) {
-      fx += owner.vx * 0.45 + owner.team.dir * 90;
+      // Lead into the space ahead, more so on a counter-attack running at speed.
+      const counter = owner.team.plan === 'counter' && owner.vx * owner.team.dir > 120 ? 1 : 0;
+      fx += owner.vx * 0.45 + owner.team.dir * (90 + counter * 110);
       fy += owner.vy * 0.3;
     } else {
       fx += clamp(b.vx * 0.3, -200, 200);
@@ -680,7 +682,7 @@ export class Match {
     // Near a goal keep the frame and the goal mouth both visible.
     const nearGoal = Math.min(Math.abs(b.x), Math.abs(PITCH_L - b.x)) < 320;
     if (nearGoal) fy = damp(fy, CY, 1, 0.5);
-    const fast = clamp((owner ? owner.speed : b.speed) / 900, 0, 1);
+    const fast = clamp((owner ? owner.speed / 500 : b.speed / 900), 0, 1);
     this.camera.update(dt, fx, fy, fast, this.effects.shake);
   }
 

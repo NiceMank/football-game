@@ -23,8 +23,8 @@ export class Camera {
   }
 
   private baseZoom() {
-    const wantW = 1080;
-    const wantH = 640;
+    const wantW = 1220;
+    const wantH = 720;
     return Math.min(this.viewW / wantW, this.viewH / (wantH * TILT));
   }
 
