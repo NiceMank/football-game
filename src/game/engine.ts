@@ -17,6 +17,8 @@ const PLAYER_RADIUS = 14;
 const BALL_RADIUS = 8;
 const BALL_OFFSET = PLAYER_RADIUS + BALL_RADIUS + 1;
 const PLAYER_COLLISION_DISTANCE = PLAYER_RADIUS * 2;
+const HOME_SUPPORT_SEPARATION_RADIUS = 112;
+const HOME_SUPPORT_SEPARATION_OFFSET = 48;
 const BALL_PICKUP_DISTANCE = PLAYER_RADIUS + BALL_RADIUS + 5;
 const PASS_CHARGE_LIMIT = 0.25;
 const MAX_SHOT_CHARGE = 0.9;
@@ -747,11 +749,216 @@ export class Game {
     this.sfx?.(perfect ? 'power' : 'kick');
   }
 
-  /** Home support returns to shape; away teammates follow their current tactical phase. */
-  private updateFormationPlayers(dt: number) {
-    for (let i = 0; i < this.homeTeam.length; i++) {
-      if (i !== this.activePlayerIndex) this.movePlayerToFormation(this.homeTeam[i], dt);
+  /** Home teammates seek role-appropriate support positions instead of snapping back to slots. */
+  private updateHomeSupport(dt: number) {
+    const ball = this.ball;
+    const active = this.homeTeam[this.activePlayerIndex] ?? null;
+    const carrier = ball.owner === 'home' ? this.getPlayer('home', ball.ownerId) : null;
+    const receiver = ball.owner === 'none' && ball.targetTeam === 'home'
+      ? this.getPlayer('home', ball.targetId)
+      : null;
+    const opponentCarrier = ball.owner === 'away' ? this.getPlayer('away', ball.ownerId) : null;
+    const homeKeeperHasBall = ball.keeperOwner === 'home';
+    const awayKeeperHasBall = ball.keeperOwner === 'away';
+    const homeAttack = carrier !== null || receiver !== null || homeKeeperHasBall;
+    const opponentInControl = opponentCarrier !== null || awayKeeperHasBall;
+
+    let anchorX = ball.x;
+    let anchorY = ball.y;
+    if (carrier) {
+      anchorX = carrier.x + carrier.vx * 0.18;
+      anchorY = carrier.y + carrier.vy * 0.18;
+    } else if (receiver) {
+      const distance = magnitude(ball.x - receiver.x, ball.y - receiver.y);
+      const leadTime = clamp(distance / Math.max(140, magnitude(ball.vx, ball.vy)), 0.08, 0.32);
+      anchorX = ball.x + ball.vx * leadTime;
+      anchorY = ball.y + ball.vy * leadTime;
+    } else if (homeKeeperHasBall) {
+      anchorX = this.homeKeeper.x;
+      anchorY = this.homeKeeper.y;
+    } else if (opponentCarrier) {
+      anchorX = opponentCarrier.x + opponentCarrier.vx * 0.16;
+      anchorY = opponentCarrier.y + opponentCarrier.vy * 0.16;
+    } else if (awayKeeperHasBall) {
+      anchorX = this.awayKeeper.x;
+      anchorY = this.awayKeeper.y;
+    } else {
+      anchorX += ball.vx * 0.14;
+      anchorY += ball.vy * 0.14;
+      // When play is loose, use the controlled player's location too, not just the ball's.
+      if (active && ball.owner === 'none') {
+        anchorX = anchorX * 0.84 + active.x * 0.16;
+        anchorY = anchorY * 0.84 + active.y * 0.16;
+      }
     }
+    anchorX = clamp(anchorX, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
+    anchorY = clamp(anchorY, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+
+    for (let i = 0; i < this.homeTeam.length; i++) {
+      if (i === this.activePlayerIndex) continue;
+      const player = this.homeTeam[i];
+      let targetX = player.formationX;
+      let targetY = player.formationY;
+      const followingPass = ball.targetTeam === 'home'
+        && player.id !== ball.targetId
+        && player.state === 'passing' && player.stateTimer > 0;
+
+      if (followingPass) {
+        // Keep the passer's momentum and let them follow their pass for a brief beat.
+        targetX = player.x + player.vx * 0.32;
+        targetY = player.y + player.vy * 0.32 - 22;
+      } else if (homeAttack) {
+        if (player.role === 'forward') {
+          const progress = clamp((FIELD_BOTTOM - anchorY) / (FIELD_BOTTOM - FIELD_TOP), 0, 1);
+          const runDepth = clamp(205 - progress * 45, 150, 205);
+          targetY = clamp(anchorY - runDepth, FIELD_TOP + 82, FIELD_BOTTOM - PLAYER_RADIUS);
+          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 152);
+        } else if (player.role === 'midfielder') {
+          targetY = clamp(anchorY + 58, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 108);
+        } else {
+          const behindDistance = anchorY > 760 ? 142 : 212;
+          targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.18, -58, 58);
+          targetY = clamp(Math.max(CENTER_Y + 108, anchorY + behindDistance), CENTER_Y + 108, FIELD_BOTTOM - 22);
+        }
+      } else if (opponentInControl) {
+        if (player.role === 'forward') {
+          const activeShade = active ? clamp((active.x - anchorX) * 0.14, -32, 32) : 0;
+          targetX = player.formationX + (anchorX - player.formationX) * 0.38 + activeShade;
+          targetY = clamp(anchorY - 72, FIELD_TOP + 60, FIELD_BOTTOM - PLAYER_RADIUS);
+        } else if (player.role === 'midfielder') {
+          targetY = clamp(anchorY + 122, CENTER_Y + 42, FIELD_BOTTOM - 84);
+          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 104);
+        } else {
+          targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.14, -46, 46);
+          targetY = clamp(Math.max(CENTER_Y + 104, anchorY + 188), CENTER_Y + 104, FIELD_BOTTOM - 20);
+        }
+      } else {
+        // Loose balls invite support; defenders still hold a line behind the action.
+        if (player.role === 'forward') {
+          targetY = clamp(anchorY - 96, FIELD_TOP + 82, FIELD_BOTTOM - PLAYER_RADIUS);
+          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 132);
+        } else if (player.role === 'midfielder') {
+          targetY = clamp(anchorY + 44, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 98);
+        } else {
+          targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.13, -42, 42);
+          targetY = clamp(Math.max(CENTER_Y + 104, anchorY + 190), CENTER_Y + 104, FIELD_BOTTOM - 20);
+        }
+      }
+
+      targetX = clamp(targetX, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
+      targetY = clamp(targetY, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+      const defenderLineY = player.role === 'defender'
+        ? Math.min(anchorY + 52, FIELD_BOTTOM - PLAYER_RADIUS)
+        : FIELD_TOP + PLAYER_RADIUS;
+      this.moveHomeSupportPlayer(player, targetX, targetY, defenderLineY, dt, followingPass);
+    }
+  }
+
+  /** Scores two lateral outlets by opponent pressure, passing lane, active player and team spacing. */
+  private chooseHomeSupportLane(
+    player: FootballPlayer,
+    active: FootballPlayer | null,
+    anchorX: number,
+    anchorY: number,
+    targetY: number,
+    offset: number,
+  ) {
+    const minX = FIELD_LEFT + PLAYER_RADIUS;
+    const maxX = FIELD_RIGHT - PLAYER_RADIUS;
+    const leftX = clamp(anchorX - offset, minX, maxX);
+    const rightX = clamp(anchorX + offset, minX, maxX);
+    const leftScore = this.scoreHomeSupportLane(player, active, anchorX, anchorY, leftX, targetY);
+    const rightScore = this.scoreHomeSupportLane(player, active, anchorX, anchorY, rightX, targetY);
+    return leftScore >= rightScore ? leftX : rightX;
+  }
+
+  private scoreHomeSupportLane(
+    player: FootballPlayer,
+    active: FootballPlayer | null,
+    anchorX: number,
+    anchorY: number,
+    targetX: number,
+    targetY: number,
+  ) {
+    let nearestOpponentSquared = Number.POSITIVE_INFINITY;
+    for (const opponent of this.awayTeam) {
+      const dx = opponent.x - targetX;
+      const dy = opponent.y - targetY;
+      const distanceSquared = dx * dx + dy * dy;
+      if (distanceSquared < nearestOpponentSquared) nearestOpponentSquared = distanceSquared;
+    }
+    let nearestTeammateSquared = Number.POSITIVE_INFINITY;
+    for (const teammate of this.homeTeam) {
+      if (teammate.id === player.id) continue;
+      const dx = teammate.x - targetX;
+      const dy = teammate.y - targetY;
+      const distanceSquared = dx * dx + dy * dy;
+      if (distanceSquared < nearestTeammateSquared) nearestTeammateSquared = distanceSquared;
+    }
+
+    const opponentSpace = Math.sqrt(nearestOpponentSquared);
+    const teammateSpace = Math.sqrt(nearestTeammateSquared);
+    const laneClearance = this.passLaneClearance(anchorX, anchorY, targetX, targetY, this.awayTeam);
+    const anchorDistance = magnitude(targetX - anchorX, targetY - anchorY);
+    const moveDistance = magnitude(targetX - player.x, targetY - player.y);
+    const activeDistance = active && active.id !== player.id
+      ? magnitude(targetX - active.x, targetY - active.y)
+      : 180;
+    const formationSide = player.formationX < anchorX ? -1 : 1;
+    const targetSide = targetX < anchorX ? -1 : 1;
+    const sidePreference = formationSide === targetSide ? 0.12 : 0;
+    const activeCrowding = Math.max(0, 105 - activeDistance) * 0.012;
+
+    return clamp(opponentSpace / 180, 0, 1.35) * 1.1
+      + clamp(teammateSpace / 150, 0, 1.2) * 0.62
+      + clamp(laneClearance / 85, 0, 1.25) * 0.45
+      - anchorDistance * 0.0011
+      - moveDistance * 0.00045
+      + sidePreference
+      - activeCrowding;
+  }
+
+  /** Adds a small repulsion steering offset before applying the shared smooth movement model. */
+  private moveHomeSupportPlayer(
+    player: FootballPlayer,
+    targetX: number,
+    targetY: number,
+    defenderLineY: number,
+    dt: number,
+    preservePassState: boolean,
+  ) {
+    let separationX = 0;
+    let separationY = 0;
+    const separationRadiusSquared = HOME_SUPPORT_SEPARATION_RADIUS * HOME_SUPPORT_SEPARATION_RADIUS;
+    for (const teammate of this.homeTeam) {
+      if (teammate.id === player.id) continue;
+      let dx = player.x - teammate.x;
+      let dy = player.y - teammate.y;
+      const distanceSquared = dx * dx + dy * dy;
+      if (distanceSquared >= separationRadiusSquared) continue;
+      let distance = Math.sqrt(distanceSquared);
+      if (distance < 0.001) {
+        dx = player.id < teammate.id ? -1 : 1;
+        dy = 0;
+        distance = 1;
+      }
+      const force = (HOME_SUPPORT_SEPARATION_RADIUS - distance) / HOME_SUPPORT_SEPARATION_RADIUS;
+      separationX += dx / distance * force;
+      separationY += dy / distance * force;
+    }
+
+    targetX += clamp(separationX, -1.5, 1.5) * HOME_SUPPORT_SEPARATION_OFFSET;
+    targetY += clamp(separationY, -1.5, 1.5) * HOME_SUPPORT_SEPARATION_OFFSET;
+    targetX = clamp(targetX, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
+    targetY = clamp(Math.max(targetY, defenderLineY), FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+    this.movePlayerToTarget(player, targetX, targetY, dt, preservePassState);
+  }
+
+  /** Home support reacts to possession, roles and space; the away side keeps its tactical AI. */
+  private updateFormationPlayers(dt: number) {
+    this.updateHomeSupport(dt);
     this.updateAwayAI(dt);
   }
 
@@ -1089,7 +1296,7 @@ export class Game {
     return Math.sqrt(nearestSquared);
   }
 
-  private movePlayerToTarget(player: FootballPlayer, targetX: number, targetY: number, dt: number) {
+  private movePlayerToTarget(player: FootballPlayer, targetX: number, targetY: number, dt: number, preserveActionState = false) {
     if (player.stunTimer > 0) return;
     const minX = FIELD_LEFT + PLAYER_RADIUS;
     const maxX = FIELD_RIGHT - PLAYER_RADIUS;
@@ -1108,8 +1315,8 @@ export class Game {
     const speed = magnitude(player.vx, player.vy);
     if (speed > 8) {
       player.angle = Math.atan2(player.vy, player.vx);
-      player.state = player.stunTimer > 0 ? 'stunned' : 'running';
-    } else if (player.stunTimer === 0) {
+      if (!preserveActionState) player.state = player.stunTimer > 0 ? 'stunned' : 'running';
+    } else if (player.stunTimer === 0 && !preserveActionState) {
       player.state = 'idle';
     }
   }
@@ -1125,29 +1332,6 @@ export class Game {
 
   private randomSigned() {
     return this.random01() * 2 - 1;
-  }
-
-  private movePlayerToFormation(player: FootballPlayer, dt: number) {
-    if (player.stunTimer > 0) return;
-    const dx = player.formationX - player.x;
-    const dy = player.formationY - player.y;
-    const distance = magnitude(dx, dy);
-    const maxSpeed = player.speed * 0.65;
-    const targetSpeed = Math.min(maxSpeed, distance * 2.6);
-    const targetVx = distance > 0.001 ? dx / distance * targetSpeed : 0;
-    const targetVy = distance > 0.001 ? dy / distance * targetSpeed : 0;
-    const blend = 1 - Math.exp(-6 * dt);
-    player.vx += (targetVx - player.vx) * blend;
-    player.vy += (targetVy - player.vy) * blend;
-    this.movePlayerByVelocity(player, dt);
-
-    const speed = magnitude(player.vx, player.vy);
-    if (speed > 8) {
-      player.angle = Math.atan2(player.vy, player.vx);
-      player.state = 'running';
-    } else {
-      player.state = 'idle';
-    }
   }
 
   private movePlayerByVelocity(player: FootballPlayer, dt: number) {
