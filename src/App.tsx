@@ -1,383 +1,298 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Game, W, H, DIFFICULTY, waveName, type Input, type Phase, type Difficulty, type Stats } from './game/engine';
+import { useCallback, useEffect, useRef, useState, type ReactNode, type TouchEvent } from 'react';
+import { Game, H, W, type HudState, type Input, type Phase } from './game/engine';
 import { playSfx, unlockAudio } from './game/sfx';
 
-interface ScoreEntry { score: number; goals: number; date: string; diff: Difficulty }
-const HS_KEY = 'efootball-striker-highscores-v2';
-const loadScores = (): ScoreEntry[] => { try { return JSON.parse(localStorage.getItem(HS_KEY) || '[]'); } catch { return []; } };
-const saveScores = (s: ScoreEntry[]) => localStorage.setItem(HS_KEY, JSON.stringify(s));
+interface JoystickTouch {
+  id: number;
+  originX: number;
+  originY: number;
+  x: number;
+  y: number;
+}
+
+const FIXED_STEP = 1 / 120;
+const JOYSTICK_RADIUS = 50;
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const gameRef = useRef<Game>(null!);
-  if (!gameRef.current) gameRef.current = new Game();
-  const inputRef = useRef<Input>({ dx: 0, dy: 0, shoot: false, dash: false });
-  const keys = useRef<Record<string, boolean>>({});
-  const joy = useRef<{ id: number; ox: number; oy: number; x: number; y: number } | null>(null);
-  const shootTouch = useRef<number | null>(null);
+  const [game] = useState(() => new Game());
+  const inputRef = useRef<Input>({ dx: 0, dy: 0 });
+  const keysRef = useRef<Record<string, boolean>>({});
+  const joystickRef = useRef<JoystickTouch | null>(null);
 
   const [phase, setPhase] = useState<Phase>('start');
-  const [hud, setHud] = useState(gameRef.current.hud());
-  const [scores, setScores] = useState<ScoreEntry[]>(loadScores);
-  const [last, setLast] = useState<{ stats: Stats; rank: number; record: boolean; diff: Difficulty } | null>(null);
-  const [joyUI, setJoyUI] = useState<{ ox: number; oy: number; x: number; y: number } | null>(null);
-  const [isTouch, setIsTouch] = useState(false);
+  const [hud, setHud] = useState<HudState>(() => game.hud());
+  const [joystickView, setJoystickView] = useState<JoystickTouch | null>(null);
+  const [touchMode, setTouchMode] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [diff, setDiff] = useState<Difficulty>('pro');
+
+  const clearInput = useCallback(() => {
+    inputRef.current.dx = 0;
+    inputRef.current.dy = 0;
+    keysRef.current = {};
+    joystickRef.current = null;
+    setJoystickView(null);
+  }, []);
 
   const startGame = useCallback(() => {
-    unlockAudio(); playSfx('ui');
-    gameRef.current.start(diff); setPhase('playing'); setLast(null);
-  }, [diff]);
+    unlockAudio();
+    if (!muted) playSfx('ui');
+    clearInput();
+    game.start();
+    setPhase('playing');
+  }, [clearInput, muted]);
+
+  const togglePause = useCallback(() => {
+    game.togglePause();
+    if (game.phase === 'paused') clearInput();
+    setPhase(game.phase);
+    if (!muted) playSfx('ui');
+  }, [clearInput, muted]);
 
   useEffect(() => {
-    const g = gameRef.current;
-    g.sfx = (n) => { if (!muted) playSfx(n); };
-    g.onEnd = (stats) => {
-      const prevBest = loadScores()[0]?.score ?? 0;
-      const entry: ScoreEntry = { score: stats.score, goals: stats.goals, date: new Date().toLocaleDateString(), diff: g.diff };
-      const next = [...loadScores(), entry].sort((a, b) => b.score - a.score).slice(0, 8);
-      saveScores(next); setScores(next);
-      setLast({ stats, rank: next.indexOf(entry) + 1, record: stats.score > prevBest && stats.score > 0, diff: g.diff });
-      setPhase('over');
+    game.sfx = (name) => {
+      if (!muted) playSfx(name);
     };
   }, [muted]);
 
-  // main loop
+  // Canvas loop: fixed-step simulation, high-DPI drawing, and a low-frequency HUD snapshot.
   useEffect(() => {
-    const canvas = canvasRef.current!; const ctx = canvas.getContext('2d')!;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = W * dpr; canvas.height = H * dpr; ctx.scale(dpr, dpr);
-    let raf = 0, lastT = performance.now(), acc = 0, hudT = 0;
-    const loop = (t: number) => {
-      raf = requestAnimationFrame(loop);
-      let dt = (t - lastT) / 1000; lastT = t; if (dt > 0.1) dt = 0.1;
-      acc += dt; const step = 1 / 120;
-      const inp = inputRef.current; const g = gameRef.current;
-      let guard = 0;
-      while (acc >= step && guard++ < 20) { g.update(step, inp); acc -= step; }
-      g.render(ctx);
-      hudT += dt;
-      if (hudT > 0.05) { hudT = 0; setHud(g.hud()); }
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return;
+
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = W * pixelRatio;
+    canvas.height = H * pixelRatio;
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+    let animationFrame = 0;
+    let previousTime = performance.now();
+    let accumulator = 0;
+    let hudElapsed = 0;
+
+    const frame = (now: number) => {
+      let frameDt = Math.min((now - previousTime) / 1000, 0.1);
+      previousTime = now;
+      accumulator += frameDt;
+      let steps = 0;
+      while (accumulator >= FIXED_STEP && steps < 18) {
+        game.update(FIXED_STEP, inputRef.current);
+        accumulator -= FIXED_STEP;
+        steps++;
+      }
+      game.render(context);
+      hudElapsed += frameDt;
+      if (hudElapsed >= 0.1) {
+        hudElapsed = 0;
+        setHud(game.hud());
+      }
+      animationFrame = requestAnimationFrame(frame);
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+
+    animationFrame = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(animationFrame);
   }, []);
 
-  // keyboard
+  // Keyboard controls only produce a direction vector. Gameplay stays in the engine.
   useEffect(() => {
-    const updateMove = () => {
-      const k = keys.current;
-      const dx = (k['ArrowRight'] || k['KeyD'] ? 1 : 0) - (k['ArrowLeft'] || k['KeyA'] ? 1 : 0);
-      const dy = (k['ArrowDown'] || k['KeyS'] ? 1 : 0) - (k['ArrowUp'] || k['KeyW'] ? 1 : 0);
-      if (!joy.current) { inputRef.current.dx = dx; inputRef.current.dy = dy; }
-      inputRef.current.shoot = !!(k['Space'] || k['KeyJ'] || k['KeyX'] || k['Enter']) || shootTouch.current !== null;
-      inputRef.current.dash = !!(k['ShiftLeft'] || k['ShiftRight'] || k['KeyK'] || k['KeyL']);
-    };
-    const down = (e: KeyboardEvent) => {
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
-      if (e.repeat) return;
-      const g = gameRef.current;
-      if (e.code === 'Escape' || e.code === 'KeyP') {
-        if (g.phase === 'playing' || g.phase === 'paused') { g.togglePause(); setPhase(g.phase); playSfx('ui'); }
-        return;
+    const refreshKeyboardVector = () => {
+      const keys = keysRef.current;
+      const dx = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA || keys.KeyQ ? 1 : 0);
+      const dy = (keys.ArrowDown || keys.KeyS ? 1 : 0) - (keys.ArrowUp || keys.KeyW || keys.KeyZ ? 1 : 0);
+      if (!joystickRef.current) {
+        inputRef.current.dx = dx;
+        inputRef.current.dy = dy;
       }
-      if (g.phase === 'start' || g.phase === 'over') {
-        if (e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyR') startGame();
-        return;
-      }
-      if (e.code === 'KeyR') { startGame(); return; }
-      if (['Space', 'Enter', 'KeyJ', 'KeyX'].includes(e.code)) gameRef.current.pendingShoot = true;
-      keys.current[e.code] = true; updateMove();
     };
-    const up = (e: KeyboardEvent) => { keys.current[e.code] = false; updateMove(); };
-    window.addEventListener('keydown', down); window.addEventListener('keyup', up);
-    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
-  }, [startGame]);
 
-  // touch
-  const onTouchStart = (e: React.TouchEvent) => {
-    setIsTouch(true); unlockAudio();
-    for (const t of Array.from(e.changedTouches)) {
-      if (t.clientX < window.innerWidth / 2 && !joy.current) {
-        joy.current = { id: t.identifier, ox: t.clientX, oy: t.clientY, x: t.clientX, y: t.clientY };
-        setJoyUI({ ...joy.current });
-      } else if (shootTouch.current === null) {
-        shootTouch.current = t.identifier; inputRef.current.shoot = true; gameRef.current.pendingShoot = true;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) event.preventDefault();
+      if (event.repeat) return;
+      if (event.code === 'Escape' || event.code === 'KeyP') {
+        if (game.phase === 'playing' || game.phase === 'paused') togglePause();
+        return;
       }
-    }
-  };
-  const onTouchMove = (e: React.TouchEvent) => {
-    for (const t of Array.from(e.changedTouches)) {
-      if (joy.current && t.identifier === joy.current.id) {
-        let dx = t.clientX - joy.current.ox, dy = t.clientY - joy.current.oy;
-        const l = Math.hypot(dx, dy), max = 50;
-        if (l > max) { joy.current.ox += dx / l * (l - max); joy.current.oy += dy / l * (l - max); dx = dx / l * max; dy = dy / l * max; }
-        joy.current.x = t.clientX; joy.current.y = t.clientY;
-        const dead = 6; const m = Math.max(0, l - dead) / (max - dead);
-        inputRef.current.dx = l > 0 ? dx / l * Math.min(1, m) : 0;
-        inputRef.current.dy = l > 0 ? dy / l * Math.min(1, m) : 0;
-        setJoyUI({ ...joy.current });
+      if ((game.phase === 'start' || game.phase === 'paused') && (event.code === 'Enter' || event.code === 'Space')) {
+        if (game.phase === 'start') startGame();
+        else togglePause();
+        return;
       }
-    }
-  };
-  const onTouchEnd = (e: React.TouchEvent) => {
-    for (const t of Array.from(e.changedTouches)) {
-      if (joy.current && t.identifier === joy.current.id) { joy.current = null; inputRef.current.dx = 0; inputRef.current.dy = 0; setJoyUI(null); }
-      if (shootTouch.current === t.identifier) { shootTouch.current = null; inputRef.current.shoot = false; }
+      if (event.code === 'KeyR') { startGame(); return; }
+      if (game.phase !== 'playing') return;
+      keysRef.current[event.code] = true;
+      refreshKeyboardVector();
+    };
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      keysRef.current[event.code] = false;
+      refreshKeyboardVector();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [startGame, togglePause]);
+
+  const onTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+    setTouchMode(true);
+    unlockAudio();
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    const midpoint = bounds ? bounds.left + bounds.width / 2 : window.innerWidth / 2;
+    for (const touch of Array.from(event.changedTouches)) {
+      if (touch.clientX >= midpoint || joystickRef.current) continue;
+      const next: JoystickTouch = {
+        id: touch.identifier,
+        originX: touch.clientX,
+        originY: touch.clientY,
+        x: touch.clientX,
+        y: touch.clientY,
+      };
+      joystickRef.current = next;
+      setJoystickView(next);
     }
   };
 
-  const pause = () => { const g = gameRef.current; g.togglePause(); setPhase(g.phase); playSfx('ui'); };
-  const best = scores[0]?.score ?? 0;
-  const timeLow = hud.time < 10 && phase === 'playing';
-  const acc = last ? (last.stats.shots ? Math.min(100, Math.round((last.stats.onTarget / last.stats.shots) * 100)) : 0) : 0;
+  const onTouchMove = (event: TouchEvent<HTMLDivElement>) => {
+    const activeTouch = joystickRef.current;
+    if (!activeTouch) return;
+    for (const touch of Array.from(event.changedTouches)) {
+      if (touch.identifier !== activeTouch.id) continue;
+      const dx = touch.clientX - activeTouch.originX;
+      const dy = touch.clientY - activeTouch.originY;
+      const distance = Math.hypot(dx, dy);
+      const scale = distance > 0 ? Math.min(1, distance / JOYSTICK_RADIUS) : 0;
+      inputRef.current.dx = distance > 0 ? (dx / distance) * scale : 0;
+      inputRef.current.dy = distance > 0 ? (dy / distance) * scale : 0;
+      activeTouch.x = touch.clientX;
+      activeTouch.y = touch.clientY;
+      setJoystickView({ ...activeTouch });
+    }
+  };
+
+  const onTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
+    const activeTouch = joystickRef.current;
+    if (!activeTouch) return;
+    for (const touch of Array.from(event.changedTouches)) {
+      if (touch.identifier !== activeTouch.id) continue;
+      joystickRef.current = null;
+      inputRef.current.dx = 0;
+      inputRef.current.dy = 0;
+      setJoystickView(null);
+    }
+  };
+
+  const possessionLabel = hud.possession === 'home' ? 'DOMICILE' : hud.possession === 'away' ? 'EXTÉRIEUR' : 'LIBRE';
 
   return (
-    <div className="fixed inset-0 bg-[#0b1220] text-white select-none overflow-hidden font-sans"
+    <main
+      className="fixed inset-0 overflow-hidden bg-[#0b1220] font-sans text-white select-none"
       style={{ touchAction: 'none' }}
       onTouchStart={phase === 'playing' ? onTouchStart : undefined}
       onTouchMove={phase === 'playing' ? onTouchMove : undefined}
-      onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+    >
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_#1e3a5f_0%,_#0b1220_60%)]" />
-
       <div className="absolute inset-0 flex items-center justify-center">
         <div className="relative" style={{ aspectRatio: `${W}/${H}`, height: '100%', maxHeight: '100dvh', maxWidth: '100vw' }}>
-          <canvas ref={canvasRef} className="w-full h-full block sm:rounded-2xl shadow-[0_0_80px_rgba(0,0,0,0.6)]" />
+          <canvas ref={canvasRef} className="block h-full w-full shadow-[0_0_80px_rgba(0,0,0,0.6)] sm:rounded-2xl" />
 
-          {/* ---------- HUD ---------- */}
           {(phase === 'playing' || phase === 'paused') && (
-            <div className="absolute inset-0 pointer-events-none">
-              <div className="absolute inset-x-0 top-0 p-2 flex items-start justify-between gap-2">
-                <div className="bg-black/55 backdrop-blur rounded-xl px-3 py-1.5 border border-white/10">
-                  <div className="text-[9px] uppercase tracking-[0.2em] text-sky-300">Score</div>
-                  <div className="text-2xl font-black tabular-nums leading-none">{hud.score.toLocaleString()}</div>
-                  {hud.combo > 1 && (
-                    <div className="mt-1">
-                      <div className="text-[10px] font-bold text-amber-300">COMBO x{hud.combo}</div>
-                      <div className="h-1 w-16 bg-white/15 rounded-full overflow-hidden"><div className="h-full bg-amber-300" style={{ width: `${Math.max(0, Math.min(1, hud.comboTimer / 13)) * 100}%` }} /></div>
-                    </div>
-                  )}
+            <div className="pointer-events-none absolute inset-0">
+              <div className="absolute inset-x-0 top-0 flex justify-center p-2">
+                <div className="rounded-xl border border-white/10 bg-black/55 px-5 py-2 text-center backdrop-blur">
+                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/60">eFootball · 5v5</div>
+                  <div className="text-xl font-black tabular-nums leading-none">{hud.homeScore} : {hud.awayScore}</div>
+                  <div className="mt-1 text-[9px] uppercase tracking-[0.15em] text-amber-200">Ballon : {possessionLabel}</div>
                 </div>
-                <div className={`rounded-xl px-4 py-1.5 border ${timeLow ? 'bg-red-600/80 border-red-300 animate-pulse' : 'bg-black/55 border-white/10'} backdrop-blur text-center`}>
-                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/70">Temps</div>
-                  <div className="text-2xl font-black tabular-nums leading-none">{Math.ceil(hud.time)}</div>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <div className="bg-black/55 backdrop-blur rounded-xl px-3 py-1.5 border border-white/10 text-right">
-                    <div className="text-[9px] uppercase tracking-[0.2em] text-emerald-300">Buts · Niv.{hud.level}</div>
-                    <div className="text-2xl font-black tabular-nums leading-none">{hud.goals}</div>
-                  </div>
-                  <button onClick={pause} onTouchStart={(e) => e.stopPropagation()} onTouchEnd={(e) => { e.stopPropagation(); e.preventDefault(); pause(); }}
-                    className="pointer-events-auto bg-black/55 border border-white/10 rounded-lg px-3 py-1 text-xs font-bold hover:bg-white/10 active:scale-95 transition">
-                    {phase === 'paused' ? '▶' : '❚❚'}
-                  </button>
-                </div>
+                <button
+                  onClick={togglePause}
+                  onTouchStart={(event) => event.stopPropagation()}
+                  className="pointer-events-auto absolute right-2 top-2 rounded-lg border border-white/15 bg-black/60 px-3 py-2 text-xs font-bold hover:bg-white/10"
+                  aria-label={phase === 'paused' ? 'Reprendre le match' : 'Mettre le match en pause'}
+                >
+                  {phase === 'paused' ? '▶' : '❚❚'}
+                </button>
               </div>
-
-              {/* wave name */}
-              <div className="absolute top-[64px] inset-x-0 text-center text-[10px] uppercase tracking-[0.35em] text-white/40">{waveName(hud.level)}</div>
-
-              {/* active effects */}
-              <div className="absolute left-2 top-[86px] flex flex-col gap-1">
-                {hud.effects.x2 > 0 && <Chip color="bg-pink-500/80">x2 {hud.effects.x2.toFixed(0)}s</Chip>}
-                {hud.effects.speed > 0 && <Chip color="bg-cyan-500/80">Vitesse {hud.effects.speed.toFixed(0)}s</Chip>}
-                {hud.effects.magnet > 0 && <Chip color="bg-purple-500/80">Aimant {hud.effects.magnet.toFixed(0)}s</Chip>}
+              <div className="absolute bottom-3 left-3 rounded-lg border border-white/10 bg-black/50 px-2 py-1 text-[10px] text-white/75">
+                Joueur actif · #{hud.activePlayerId ?? '—'}
               </div>
-
-              {/* bottom gauges */}
-              <div className="absolute inset-x-0 bottom-0 p-3 flex items-end justify-between gap-3">
-                <div className="w-24">
-                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/60 mb-0.5">Énergie</div>
-                  <div className="h-2 rounded-full bg-white/15 overflow-hidden">
-                    <div className="h-full rounded-full transition-[width] duration-150" style={{ width: `${hud.stamina}%`, background: hud.stamina > 30 ? 'linear-gradient(90deg,#22d3ee,#a7f3d0)' : '#f87171' }} />
-                  </div>
+              {touchMode && phase === 'playing' && (
+                <div className="absolute bottom-3 right-3 rounded-lg bg-black/45 px-2 py-1 text-[10px] text-white/65">
+                  Stick à gauche · courez avec le ballon
                 </div>
-                <div className="flex-1 max-w-[180px]">
-                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/60 mb-0.5 text-right">{hud.perfect ? '★ TIR PARFAIT' : 'Puissance'}</div>
-                  <div className="h-3 rounded-full bg-white/15 overflow-hidden relative">
-                    <div className="absolute right-0 top-0 h-full bg-amber-300/40" style={{ width: '18%' }} />
-                    <div className="h-full rounded-full transition-[width] duration-75" style={{ width: `${hud.power * 100}%`, background: hud.perfect ? 'linear-gradient(90deg,#f472b6,#ffd166)' : 'linear-gradient(90deg,#38bdf8,#ffd166)' }} />
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
           )}
 
-          {/* touch buttons */}
-          {phase === 'playing' && isTouch && (
-            <div className="absolute right-4 bottom-16 flex flex-col items-center gap-3 z-10">
-              <button
-                onTouchStart={(e) => { e.stopPropagation(); inputRef.current.dash = true; setIsTouch(true); }}
-                onTouchEnd={(e) => { e.stopPropagation(); inputRef.current.dash = false; }}
-                onTouchCancel={(e) => { e.stopPropagation(); inputRef.current.dash = false; }}
-                className="w-16 h-16 rounded-full bg-cyan-400/25 border-2 border-cyan-300/70 text-cyan-100 font-black text-xs active:scale-90 active:bg-cyan-400/50 transition">ESQUIVE</button>
-              <button
-                onTouchStart={(e) => { e.stopPropagation(); inputRef.current.shoot = true; shootTouch.current = -1; gameRef.current.pendingShoot = true; }}
-                onTouchEnd={(e) => { e.stopPropagation(); inputRef.current.shoot = false; shootTouch.current = null; }}
-                onTouchCancel={(e) => { e.stopPropagation(); inputRef.current.shoot = false; shootTouch.current = null; }}
-                className="w-24 h-24 rounded-full bg-amber-400/25 border-2 border-amber-300/80 text-amber-100 font-black text-base active:scale-90 active:bg-amber-400/50 transition shadow-[0_0_30px_rgba(251,191,36,0.35)]">TIR</button>
-            </div>
-          )}
-          {phase === 'playing' && isTouch && hud.time > DIFFICULTY[diff].time - 9 && (
-            <div className="absolute top-[86px] right-2 text-right pointer-events-none text-[9px] leading-relaxed uppercase tracking-widest text-white/50">
-              <div>◐ Glissez à gauche pour courir</div>
-              <div>◆ Appui bref : passe · maintenir : tir</div>
-              <div className="text-cyan-200/70">✦ ESQUIVE = invincible + points</div>
-            </div>
-          )}
-
-          {/* ---------- START ---------- */}
           {phase === 'start' && (
             <Overlay>
-              <div className="text-center space-y-4 animate-[pop_.5s_ease-out] w-full max-w-sm">
+              <section className="w-full max-w-sm space-y-5 text-center">
                 <div>
-                  <div className="text-[10px] tracking-[0.5em] text-sky-300 uppercase">Football d’arcade</div>
-                  <h1 className="text-5xl sm:text-6xl font-black italic tracking-tight bg-gradient-to-b from-white to-sky-300 bg-clip-text text-transparent">eFOOTBALL<br />STRIKER</h1>
-                  <p className="text-white/60 text-sm mt-2">Match arcade 5v5 sur terrain complet. Passez d’un appui bref, chargez votre frappe, et défendez votre but !</p>
+                  <div className="text-[10px] uppercase tracking-[0.45em] text-sky-300">Prototype · phase 0</div>
+                  <h1 className="mt-2 text-5xl font-black italic tracking-tight sm:text-6xl">eFOOTBALL<br />STRIKER</h1>
+                  <p className="mt-3 text-sm leading-relaxed text-white/65">
+                    Base 5v5 sur terrain complet : déplacement, formations, collisions simples, possession et remises en jeu.
+                  </p>
                 </div>
-
-                <div>
-                  <div className="text-[10px] uppercase tracking-[0.3em] text-white/50 mb-1.5">Difficulté</div>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {(Object.keys(DIFFICULTY) as Difficulty[]).map(d => (
-                      <button key={d} onClick={() => { setDiff(d); playSfx('ui'); }}
-                        className={`rounded-xl px-2 py-2 border text-xs font-black transition ${diff === d ? 'bg-amber-400/90 text-slate-900 border-amber-300 shadow-[0_0_24px_rgba(251,191,36,0.35)]' : 'bg-white/5 border-white/15 text-white/70 hover:bg-white/10'}`}>
-                        {DIFFICULTY[d].label}
-                        <div className="text-[9px] font-semibold opacity-70 mt-0.5">×{DIFFICULTY[d].mul} pts</div>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="text-[11px] text-white/50 mt-1.5">{DIFFICULTY[diff].desc} · {DIFFICULTY[diff].time}s</div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-left text-xs leading-relaxed text-white/65">
+                  <div><b className="text-white">Clavier :</b> ZQSD / WASD ou flèches.</div>
+                  <div><b className="text-white">Mobile :</b> glissez sur le côté gauche pour diriger le joueur actif.</div>
+                  <div className="mt-2 text-amber-100/80">Passes, tirs et IA tactique seront ajoutés dans les phases suivantes.</div>
                 </div>
-
-                <button onClick={startGame}
-                  className="w-full px-10 py-4 rounded-2xl bg-gradient-to-b from-amber-300 to-amber-500 text-slate-900 font-black text-xl shadow-[0_8px_0_#b45309,0_16px_40px_rgba(251,191,36,0.4)] active:translate-y-1 active:shadow-[0_4px_0_#b45309] transition-all hover:brightness-110">
+                <button
+                  onClick={startGame}
+                  className="w-full rounded-2xl bg-gradient-to-b from-amber-300 to-amber-500 px-10 py-4 text-xl font-black text-slate-900 shadow-[0_8px_0_#b45309,0_16px_40px_rgba(251,191,36,0.3)] transition hover:brightness-110 active:translate-y-1"
+                >
                   ▶ COUP D’ENVOI
                 </button>
-
-                <div className="grid grid-cols-2 gap-1.5 text-[11px] text-white/70">
-                  <Key label="Courir" keys="WASD / Flèches" />
-                  <Key label="Passe / tir" keys="Appui bref / maintenir" />
-                  <Key label="Esquiver" keys="MAJ / K (×2 pts)" />
-                  <Key label="Pause" keys="P / ÉCHAP" />
-                  <Key label="Tactile" keys="Gauche: stick" />
-                  <Key label="" keys="Droite: TIR + ESQUIVE" />
-                </div>
-
-                <div className="flex items-center justify-center gap-2">
-                  <button onClick={() => { setMuted(m => !m); unlockAudio(); }} className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/15 text-xs font-bold hover:bg-white/20">
-                    {muted ? '🔇 Son coupé' : '🔊 Son activé'}
-                  </button>
-                  <button onClick={() => { saveScores([]); setScores([]); playSfx('ui'); }} className="px-3 py-1.5 rounded-lg bg-white/10 border border-white/15 text-xs font-bold hover:bg-white/20">
-                    🗑 Effacer records
-                  </button>
-                </div>
-
-                <HighScores scores={scores} />
-              </div>
+                <button onClick={() => setMuted(value => !value)} className="text-xs font-semibold text-white/55 hover:text-white">
+                  {muted ? '🔇 Son coupé' : '🔊 Son activé'}
+                </button>
+              </section>
             </Overlay>
           )}
 
-          {/* ---------- PAUSE ---------- */}
           {phase === 'paused' && (
             <Overlay>
-              <div className="text-center space-y-5 w-full max-w-xs">
+              <section className="w-full max-w-xs space-y-5 text-center">
+                <div className="text-[10px] uppercase tracking-[0.4em] text-white/55">Match 5v5</div>
                 <h2 className="text-5xl font-black italic">PAUSE</h2>
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <Stat label="Score" value={hud.score.toLocaleString()} />
-                  <Stat label="Buts" value={String(hud.goals)} />
-                  <Stat label="Record" value={best.toLocaleString()} />
+                <div className="text-3xl font-black tabular-nums">{hud.homeScore} : {hud.awayScore}</div>
+                <div className="flex gap-2">
+                  <button onClick={togglePause} className="flex-1 rounded-xl bg-amber-400 px-5 py-3 font-black text-slate-900">▶ Reprendre</button>
+                  <button onClick={startGame} className="flex-1 rounded-xl border border-white/20 bg-white/10 px-5 py-3 font-black">↻ Recommencer</button>
                 </div>
-                <div className="flex flex-col gap-2">
-                  <Btn onClick={pause} primary>▶ Reprendre</Btn>
-                  <div className="flex gap-2">
-                    <Btn onClick={startGame}>↻ Recommencer</Btn>
-                    <Btn onClick={() => { setMuted(m => !m); }}>{muted ? '🔇' : '🔊'} Son</Btn>
-                  </div>
-                </div>
-                <div className="text-xs text-white/50">Touches : P ou ÉCHAP pour reprendre · R pour recommencer</div>
-              </div>
-            </Overlay>
-          )}
-
-          {/* ---------- GAME OVER ---------- */}
-          {phase === 'over' && last && (
-            <Overlay>
-              <div className="text-center space-y-4 animate-[pop_.4s_ease-out] w-full max-w-sm">
-                <div className="text-[10px] tracking-[0.5em] text-white/60 uppercase">Coup de sifflet final</div>
-                {last.record && <div className="text-amber-300 font-black text-lg animate-bounce">🏆 NOUVEAU RECORD !</div>}
-                <div className="text-6xl font-black tabular-nums bg-gradient-to-b from-amber-200 to-amber-500 bg-clip-text text-transparent">{last.stats.score.toLocaleString()}</div>
-                <div className="text-white/60 text-sm">{DIFFICULTY[last.diff].label} · {last.rank > 0 ? <>Rang <b className="text-white">#{last.rank}</b> au classement</> : 'Hors classement'}</div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <Stat label="Buts" value={String(last.stats.goals)} />
-                  <Stat label="Tirs" value={String(last.stats.shots)} />
-                  <Stat label="Précision" value={`${acc}%`} />
-                  <Stat label="Tirs parfaits" value={String(last.stats.powerShots)} />
-                  <Stat label="Meilleur combo" value={`x${last.stats.bestCombo}`} />
-                  <Stat label="Esquives" value={String(last.stats.dodges)} />
-                </div>
-
-                <Btn onClick={startGame} primary big>↻ REJOUER</Btn>
-                <div className="text-xs text-white/40">ESPACE ou R pour relancer instantanément</div>
-                <HighScores scores={scores} highlight={last.stats.score} />
-              </div>
+                <button onClick={() => setMuted(value => !value)} className="text-xs text-white/55 hover:text-white">
+                  {muted ? '🔇 Son coupé' : '🔊 Son activé'}
+                </button>
+              </section>
             </Overlay>
           )}
         </div>
       </div>
 
-      {joyUI && (
-        <div className="fixed pointer-events-none z-20" style={{ left: joyUI.ox - 50, top: joyUI.oy - 50 }}>
-          <div className="w-[100px] h-[100px] rounded-full border-2 border-white/30 bg-white/5" />
-          <div className="absolute w-11 h-11 rounded-full bg-sky-300/80 shadow-lg" style={{ left: 50 - 22 + (joyUI.x - joyUI.ox), top: 50 - 22 + (joyUI.y - joyUI.oy) }} />
+      {joystickView && phase === 'playing' && (
+        <div className="pointer-events-none fixed z-20" style={{ left: joystickView.originX - JOYSTICK_RADIUS, top: joystickView.originY - JOYSTICK_RADIUS }}>
+          <div className="h-[100px] w-[100px] rounded-full border-2 border-white/30 bg-white/5" />
+          <div
+            className="absolute h-11 w-11 rounded-full bg-sky-300/80 shadow-lg"
+            style={{ left: 50 - 22 + joystickView.x - joystickView.originX, top: 50 - 22 + joystickView.y - joystickView.originY }}
+          />
         </div>
       )}
-      <style>{`@keyframes pop{0%{transform:scale(.85);opacity:0}60%{transform:scale(1.03)}100%{transform:scale(1);opacity:1}}`}</style>
-    </div>
+    </main>
   );
 }
 
-function Overlay({ children }: { children: React.ReactNode }) {
+function Overlay({ children }: { children: ReactNode }) {
   return (
-    <div className="absolute inset-0 overflow-y-auto bg-slate-950/75 backdrop-blur-sm p-4">
-      <div className="min-h-full flex items-center justify-center">{children}</div>
-    </div>
-  );
-}
-function Key({ label, keys }: { label: string; keys: string }) {
-  return <div className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5"><span className="text-white/40">{label} </span><span className="font-semibold text-white">{keys}</span></div>;
-}
-function Chip({ children, color }: { children: React.ReactNode; color: string }) {
-  return <div className={`${color} rounded-full px-2 py-0.5 text-[10px] font-black shadow`}>{children}</div>;
-}
-function Stat({ label, value }: { label: string; value: string }) {
-  return <div className="bg-white/5 border border-white/10 rounded-xl px-2 py-2">
-    <div className="text-[9px] uppercase tracking-[0.15em] text-white/50">{label}</div>
-    <div className="text-lg font-black tabular-nums leading-tight">{value}</div>
-  </div>;
-}
-function Btn({ children, onClick, primary, big }: { children: React.ReactNode; onClick: () => void; primary?: boolean; big?: boolean }) {
-  return (
-    <button onClick={onClick} className={`${big ? 'px-10 py-4 text-xl w-full' : 'px-6 py-3 flex-1'} rounded-xl font-black transition-all active:translate-y-0.5 ${primary ? 'bg-gradient-to-b from-amber-300 to-amber-500 text-slate-900 shadow-[0_6px_0_#b45309] hover:brightness-110' : 'bg-white/10 border border-white/20 hover:bg-white/20'}`}>{children}</button>
-  );
-}
-function HighScores({ scores, highlight }: { scores: ScoreEntry[]; highlight?: number }) {
-  return (
-    <div className="bg-black/40 border border-white/10 rounded-xl p-3 w-full text-left">
-      <div className="text-[10px] uppercase tracking-[0.3em] text-amber-300 mb-1.5 text-center">Tableau d’honneur</div>
-      {scores.length === 0 ? <div className="text-center text-white/40 text-sm py-2">Aucun score — à vous de marquer l’histoire.</div> :
-        <ol className="space-y-0.5 text-sm">
-          {scores.slice(0, 5).map((s, i) => (
-            <li key={i} className={`flex items-center gap-2 px-2 py-0.5 rounded ${highlight === s.score ? 'bg-amber-400/20 text-amber-200' : ''}`}>
-              <span className="text-white/50 w-5">{i + 1}.</span>
-              <span className="font-bold tabular-nums flex-1">{s.score.toLocaleString()}</span>
-              <span className="text-white/40 text-[10px] uppercase">{DIFFICULTY[s.diff]?.label ?? 'PRO'}</span>
-              <span className="text-white/50 text-xs">{s.goals} ⚽</span>
-            </li>
-          ))}
-        </ol>}
+    <div className="absolute inset-0 overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-sm">
+      <div className="flex min-h-full items-center justify-center">{children}</div>
     </div>
   );
 }
