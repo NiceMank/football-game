@@ -52,6 +52,7 @@ export function attachKeyboard(input: InputState, h: KeyboardHandlers) {
       return;
     }
     held.add(e.code);
+    input.touch = false;
     if ((KEYS.pass as readonly string[]).includes(e.code)) {
       input.pass = true;
       input.passPressed = true;

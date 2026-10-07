@@ -147,6 +147,13 @@ function tap(m, input, btn, holdSteps = 2, swipe = null) {
 {
   const { m } = carrierSetup();
   const input = createInput();
+  input.touch = true;
+  tap(m, input, 'pass', Math.round(0.3 / FIXED_DT));
+  assert(m.ball.kind === 'pass', 'a slightly long thumb tap on PASSE stays a ground pass');
+}
+{
+  const { m } = carrierSetup();
+  const input = createInput();
   tap(m, input, 'pass', 2, { dx: 1, dy: 0, power: 0.2 });
   const soft = m.ball.speed;
   const { m: m2 } = carrierSetup();

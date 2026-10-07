@@ -36,13 +36,15 @@ export interface InputState {
   dashPressed: boolean;
   passSwipe: AimSwipe | null;
   shootSwipe: AimSwipe | null;
+  /** Set by the touch controls: thumbs need a longer press before a tap turns into a lofted pass. */
+  touch: boolean;
 }
 
 export function createInput(): InputState {
   return {
     moveX: 0, moveY: 0, sprint: false, pass: false, shoot: false,
     passPressed: false, passReleased: false, shootPressed: false, shootReleased: false,
-    switchPressed: false, dashPressed: false, passSwipe: null, shootSwipe: null,
+    switchPressed: false, dashPressed: false, passSwipe: null, shootSwipe: null, touch: false,
   };
 }
 

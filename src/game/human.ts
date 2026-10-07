@@ -8,6 +8,7 @@ import type { Team } from './team';
 import type { AimSwipe, InputState } from './types';
 
 const TAP_PASS = 0.22;
+const TAP_PASS_TOUCH = 0.4;
 const TAP_SHOT = 0.14;
 const SHOT_CHARGE_TIME = 0.85;
 const HUMAN_TACKLE = 0.6;
@@ -32,6 +33,7 @@ export class HumanController {
   takingTimer = 0;
   /** A tackle pressed while the carrier is still taking his touch fires as soon as it can. */
   private tackleBuffer = 0;
+  private tapPass = TAP_PASS;
 
   reset() {
     this.tackleBuffer = 0;
@@ -45,6 +47,7 @@ export class HumanController {
   }
 
   update(dt: number, input: InputState, m: Match) {
+    this.tapPass = input.touch ? TAP_PASS_TOUCH : TAP_PASS;
     const team = m.humanTeam;
     if (!team) return;
     if (!team.controlled || team.controlled.isGK) team.controlled = bestSwitch(team, m, null, 0);
@@ -69,7 +72,7 @@ export class HumanController {
     if (this.shootHold >= 0) {
       this.chargeKind = 'shot';
       this.charge = clamp(this.shootHold / SHOT_CHARGE_TIME, 0, 1);
-    } else if (this.passHold > TAP_PASS) {
+    } else if (this.passHold > this.tapPass) {
       this.chargeKind = 'pass';
       this.charge = clamp((this.passHold - 0.1) / 0.8, 0, 1);
     } else {
@@ -104,7 +107,7 @@ export class HumanController {
     if (b.owner === team.keeper && b.held) {
       p.steerDir(mx, my, mag, input.sprint);
       if (input.passReleased && this.passHold >= 0) {
-        this.keeperRelease(m, team.keeper, this.passHold > TAP_PASS, input.passSwipe);
+        this.keeperRelease(m, team.keeper, this.passHold > this.tapPass, input.passSwipe);
         this.passHold = -1;
       } else if (input.shootReleased && this.shootHold >= 0) {
         this.keeperRelease(m, team.keeper, true, input.shootSwipe);
@@ -227,7 +230,7 @@ export class HumanController {
     let dx = swipe ? swipe.dx : mag > 0.2 ? this.moveX : Math.cos(p.facing);
     let dy = swipe ? swipe.dy : mag > 0.2 ? this.moveY : Math.sin(p.facing);
     const directed = swipe !== null || mag > 0.2;
-    const lofted = swipe ? swipe.power > 0.78 : hold > TAP_PASS;
+    const lofted = swipe ? swipe.power > 0.78 : hold > this.tapPass;
     const power = swipe ? swipe.power : clamp((hold - 0.1) / 0.8, 0, 1);
     // A plain tap never passes to nobody: widen the cone before giving up. Only swipes and lofted
     // passes are allowed to go into empty space.

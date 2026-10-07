@@ -114,6 +114,7 @@ export function TouchControls({ inputRef, hud }: Props) {
     swipeRef.current = s;
     setSwipe(s);
     const input = inputRef.current;
+    input.touch = true;
     if (kind === 'pass') {
       input.pass = true;
       input.passPressed = true;
