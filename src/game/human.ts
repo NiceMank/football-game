@@ -386,18 +386,30 @@ const ranked: Player[] = [];
 const rankedScore: number[] = [];
 
 /**
- * Switch target: the outfield player who can intervene soonest, with a bonus for being goal-side
- * when defending. `rank` cycles through the next-best options on repeated presses.
+ * Switch target: the outfield player most useful for the current action, not simply the nearest.
+ * A teammate a pass is travelling to comes first; when defending, being able to get between the
+ * carrier and goal counts as much as reaching the ball, and players left behind the play are
+ * demoted. `rank` cycles through the next-best options on repeated presses.
  */
 export function bestSwitch(team: Team, m: Match, exclude: Player | null, rank: number) {
   ranked.length = 0;
   rankedScore.length = 0;
   const b = m.ball;
-  const defending = b.owner !== null && b.owner.team !== team;
+  const carrier = b.owner && b.owner.team !== team ? b.owner : null;
+  const receiver = b.free && b.passTarget && b.passTarget.team === team ? b.passTarget : null;
   for (const p of team.players) {
     if (p.isGK || p === exclude) continue;
     let s = interceptTime(p, m);
-    if (defending && team.local(p.x) < team.local(b.x)) s -= 0.25;
+    if (p === receiver) s -= 0.7;
+    if (carrier) {
+      // Goal-side blocking point a third of the way from the carrier to our goal.
+      const gx = carrier.x + (team.ownGoalX - carrier.x) * 0.3;
+      const gy = carrier.y + (CY - carrier.y) * 0.3;
+      const tg = dist(p.x, p.y, gx, gy) / (p.maxSpeed(false) + 1);
+      s = s * 0.55 + tg * 0.45;
+      if (team.local(p.x) < team.local(carrier.x)) s -= 0.25;
+      else if (team.local(p.x) > team.local(carrier.x) + 0.08) s += 0.35;
+    }
     if (p.busy) s += 0.6;
     let i = 0;
     while (i < rankedScore.length && rankedScore[i] <= s) i++;

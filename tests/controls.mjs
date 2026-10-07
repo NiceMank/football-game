@@ -235,3 +235,25 @@ function shotLineY(m) {
   step(m, input, 1);
   assert(m.home.controlled !== before && !m.home.controlled.isGK, `right Shift switches to another outfield player (${before.name} -> ${m.home.controlled.name})`);
 }
+{
+  // Defending: a goal-side teammate beats a closer one who has been left behind the play.
+  const m = liveMatch(E);
+  const c = m.away.players[3];
+  for (const o of m.away.players) if (!o.isGK) { o.x = 900; o.y = 100 + o.index * 150; }
+  c.x = 600; c.y = CY; c.vx = -150;
+  m.gainPossession(c);
+  const h = m.home.players;
+  h[3].x = 660; h[3].y = CY + 40;
+  h[1].x = 440; h[1].y = CY + 90;
+  h[2].x = 1000; h[2].y = 100;
+  h[4].x = 1100; h[4].y = 800;
+  assert(E.bestSwitch(m.home, m, null, 0) === h[1], 'switch picks the goal-side defender, not the nearest player behind the play');
+}
+{
+  // A pass in flight: the switch goes to its intended receiver.
+  const { m, p } = carrierSetup();
+  const r = m.home.players[4];
+  E.passTo(m, p, r.x, r.y, { target: r });
+  m.update(FIXED_DT);
+  assert(E.bestSwitch(m.home, m, p, 0) === r, 'switch picks the receiver of a pass in flight');
+}
