@@ -95,4 +95,6 @@ export interface HudSnapshot {
   restartLabel: string | null;
   humanTaking: boolean;
   keeperHold: number;
+  /** The human team's keeper holds the ball and waits for the player's release. */
+  keeperHuman: boolean;
 }

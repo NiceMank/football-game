@@ -175,6 +175,9 @@ export class Match {
     this.gainPossession(k);
     this.ball.held = true;
     k.gk!.distributeTimer = rand(1.0, 2.4) + (k.team.plan === 'build' ? 0.6 : 0);
+    const careless = Math.random() < k.team.profile.keeper.errorChance * 0.7;
+    k.gk!.releaseBy = careless ? rand(7.4, 8.8) : 5.5;
+    if (careless) k.gk!.distributeTimer = k.gk!.releaseBy;
     k.gk!.state = 'set';
     this.sfx('catch');
     if (wasShot) this.effects.showBanner('ARRÊT !', k.name, '#38bdf8', 1.1);
@@ -583,6 +586,11 @@ export class Match {
       }
     }
 
+    if (b.z > 28 && b.passTarget === p && b.z < PLAYER_H + 4 && b.speed < 700) {
+      // Intended receiver of a lofted ball takes it down on the chest.
+      this.gainPossession(p);
+      return;
+    }
     if (b.z > 28) {
       // High ball: defenders head clear, attackers cushion it down.
       if (b.lastTouch && b.lastTouch.team !== p.team && p.team.local(p.x) < 0.4 && !humanCtl) {
@@ -690,6 +698,7 @@ export class Match {
       restartLabel: r ? r.type : null,
       humanTaking: this.state === 'taking' && this.humanTakes(),
       keeperHold: this.ball.held && this.state === 'live' ? this.ball.holdTime : 0,
+      keeperHuman: this.ball.held && this.state === 'live' && this.ball.owner === team.keeper && !this.demo,
     };
   }
 }

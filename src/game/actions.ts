@@ -203,7 +203,9 @@ export function tackle(m: Match, t: Player, skill: number) {
     }
   } else {
     t.stun = 0.38;
-    if (cos < -0.3 && Math.random() < m.foulChance(t, c, 1.4)) m.callFoul(t, c);
+    const bodyD = dist(t.x, t.y, c.x, c.y);
+    const mult = cos < -0.3 ? 1.6 : c.sprint ? 1 : 0.55;
+    if (bodyD < PLAYER_R * 2 + 10 && Math.random() < m.foulChance(t, c, mult)) m.callFoul(t, c);
   }
 }
 

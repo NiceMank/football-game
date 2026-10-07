@@ -72,10 +72,18 @@ export function Hud({ hud, touch, onPause }: Props) {
         </div>
       )}
 
-      {hold > 3 && (
-        <div className="absolute left-1/2 top-20 -translate-x-1/2 rounded-full bg-orange-500/90 px-3 py-1 text-xs font-black shadow-lg">
-          GARDIEN · {Math.max(0, Math.ceil(8 - hold))} s
+      {hud.keeperHuman ? (
+        <div
+          className={`absolute left-1/2 top-20 -translate-x-1/2 whitespace-nowrap rounded-full px-3 py-1 text-xs font-black shadow-lg ${hold > 5 ? 'animate-pulse bg-rose-600/95' : 'bg-sky-600/90'}`}
+        >
+          RELANCE {Math.max(0, Math.ceil(8 - hold))} s · {touch ? 'PASSE : main · TIR : dégagement' : 'X : main · C : dégagement'}
         </div>
+      ) : (
+        hold > 3 && (
+          <div className="absolute left-1/2 top-20 -translate-x-1/2 rounded-full bg-orange-500/90 px-3 py-1 text-xs font-black shadow-lg">
+            GARDIEN · {Math.max(0, Math.ceil(8 - hold))} s
+          </div>
+        )
       )}
 
       {!touch && (

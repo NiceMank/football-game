@@ -1,5 +1,5 @@
 import { clearBall, groundPassSpeed, groundTime, knockOn, passTo, shoot, slideTackle, tackle } from './actions';
-import { BOX_DEPTH, BOX_HALF, CONTROL_DIST, CY, GOAL_HALF, PITCH_L, PITCH_W, PLAYER_R } from './constants';
+import { BOX_DEPTH, BOX_HALF, CONTROL_DIST, CY, GOAL_HALF, GRAVITY, PITCH_L, PITCH_W, PLAYER_H, PLAYER_R } from './constants';
 import { clamp, dist, distToSegment, gauss, rand, segmentT } from './math';
 import type { Match } from './match';
 import type { Player } from './player';
@@ -19,7 +19,10 @@ const passPick = { score: -9, target: null as Player | null, x: 0, y: 0, lob: fa
 export function interceptTime(p: Player, m: Match, maxT = 1.8) {
   const b = m.ball;
   const speed = p.maxSpeed(false) * (p.stamina > 0.1 ? 1.3 : 1);
+  const airborne = b.z > 2 || b.vz > 0;
   for (let t = 0.05; t <= maxT; t += 0.1) {
+    // Out of reach while the ball is still above head height (first flight only).
+    if (airborne && b.z + b.vz * t - 0.5 * GRAVITY * t * t > PLAYER_H + 4) continue;
     const bx = b.predictX(t);
     const by = b.predictY(t);
     const d = dist(p.x, p.y, bx, by) - CONTROL_DIST;
@@ -208,8 +211,8 @@ function updatePlayerAI(p: Player, team: Team, m: Match, dt: number) {
   if (b.free && b.passTarget === p) {
     p.intent = 'receive';
     interceptTime(p, m);
-    const tgtX = b.kind === 'lob' || b.kind === 'cross' || b.kind === 'throw' ? b.passTargetX : icpt.x;
-    const tgtY = b.kind === 'lob' || b.kind === 'cross' || b.kind === 'throw' ? b.passTargetY : icpt.y;
+    const tgtX = b.kind === 'cross' ? b.passTargetX : icpt.x;
+    const tgtY = b.kind === 'cross' ? b.passTargetY : icpt.y;
     p.steerTo(tgtX, tgtY, 1, dist(p.x, p.y, tgtX, tgtY) > 70, 10);
     return;
   }
@@ -342,7 +345,8 @@ function pressAI(p: Player, c: Player, team: Team, m: Match, dt: number) {
   if (team.human) prob *= 0.45;
   if (Math.random() < prob) {
     const behind = team.local(p.x) > team.local(c.x) + 0.01;
-    if (behind && Math.random() < 0.35 * prof.foulRisk * 3) slideTackle(m, p, b.x - p.x, b.y - p.y);
+    const desperate = danger && c.sprint && Math.random() < 0.18;
+    if ((behind && Math.random() < 0.35 * prof.foulRisk * 3) || desperate) slideTackle(m, p, b.x - p.x, b.y - p.y);
     else tackle(m, p, prof.tackle);
   }
 }
@@ -562,9 +566,17 @@ function bestPass(p: Player, team: Team, m: Match) {
     let lob = false;
     let cross = false;
     if (risk > 0.75 && d > 240 && open > 0.6) {
-      // Lofted alternative over a blocked lane: slower and less precise, only when the receiver is free.
-      lob = true;
-      s = 0.22 + 0.2 * open;
+      // Lofted alternative over a blocked lane: only if the receiver reaches the landing spot clearly first.
+      const T = clamp(d0 / 430, 0.6, 1.45);
+      const llx = clamp(r.x + r.vx * T * lead, 25, PITCH_L - 25);
+      const lly = clamp(r.y + r.vy * T * lead, 25, PITCH_W - 25);
+      const margin = landingMargin(team, r, llx, lly, T);
+      if (margin > 0.3) {
+        lob = true;
+        s = 0.22 + 0.2 * open + Math.min(0.15, margin * 0.15);
+        passPickLX = llx;
+        passPickLY = lly;
+      }
     }
     switch (plan) {
       case 'build':
@@ -593,12 +605,26 @@ function bestPass(p: Player, team: Team, m: Match) {
     if (s > passPick.score) {
       passPick.score = s;
       passPick.target = r;
-      passPick.x = lx;
-      passPick.y = ly;
+      passPick.x = lob && !cross ? passPickLX : lx;
+      passPick.y = lob && !cross ? passPickLY : ly;
       passPick.lob = lob;
       passPick.cross = cross;
     }
   }
+}
+
+let passPickLX = 0;
+let passPickLY = 0;
+
+/** Seconds by which the receiver beats the quickest opponent to a lofted ball's landing spot. */
+function landingMargin(team: Team, r: Player, x: number, y: number, flight: number) {
+  const tr = Math.max(flight, Math.max(0, dist(r.x, r.y, x, y) - CONTROL_DIST) / r.maxSpeed(false));
+  let to = 9;
+  for (const o of team.opp.players) {
+    const t = Math.max(0, dist(o.x, o.y, x, y) - CONTROL_DIST) / o.maxSpeed(false) + 0.2;
+    if (t < to) to = t;
+  }
+  return to - tr;
 }
 
 const DRIBBLE_ANGLES = [0, 0.6, -0.6, 1.15, -1.15, 1.9, -1.9];

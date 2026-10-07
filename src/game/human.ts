@@ -98,6 +98,19 @@ export class HumanController {
       return;
     }
 
+    if (b.owner === team.keeper && b.held) {
+      p.steerDir(mx, my, mag, input.sprint);
+      if (input.passReleased && this.passHold >= 0) {
+        this.keeperRelease(m, team.keeper, this.passHold > TAP_PASS, input.passSwipe);
+        this.passHold = -1;
+      } else if (input.shootReleased && this.shootHold >= 0) {
+        this.keeperRelease(m, team.keeper, true, input.shootSwipe);
+        this.shootHold = -1;
+      }
+      this.releaseHolds(input);
+      return;
+    }
+
     if (b.owner === p) {
       p.steerDir(mx, my, mag, input.sprint);
       if (input.dashPressed) knockOn(m, p);
@@ -245,6 +258,22 @@ export class HumanController {
       return;
     }
     passTo(m, p, tx, ty, { lob: lofted, error: err, speed: swipe && !lofted ? 330 + power * 600 : undefined });
+  }
+
+  /** Keeper with the ball in hand: PASS = throw to a teammate, long PASS / TIR = punt up the pitch. */
+  keeperRelease(m: Match, k: Player, long: boolean, swipe: AimSwipe | null) {
+    const mag = Math.hypot(this.moveX, this.moveY);
+    const dx = swipe ? swipe.dx : mag > 0.2 ? this.moveX : k.team.dir;
+    const dy = swipe ? swipe.dy : mag > 0.2 ? this.moveY : 0;
+    const target = choosePassTarget(k, dx, dy, mag > 0.2 || swipe ? 0.7 : -1);
+    const tx = target ? target.x + target.vx * 0.5 : k.x + k.team.dir * 520;
+    const ty = target ? target.y + target.vy * 0.5 : k.y + dy * 300;
+    if (target) m.humanTeam!.controlled = target;
+    if (!long && target && dist(k.x, k.y, target.x, target.y) < 420) {
+      m.throwTo(k, tx, ty, target, false);
+    } else {
+      passTo(m, k, clamp(tx, 20, PITCH_L - 20), clamp(ty, 20, PITCH_W - 20), { target, lob: true, error: 0.06, kind: 'clear' });
+    }
   }
 
   doShot(m: Match, p: Player, swipe: AimSwipe | null, hold: number) {

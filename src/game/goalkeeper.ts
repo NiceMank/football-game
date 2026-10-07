@@ -5,7 +5,7 @@ import type { Match } from './match';
 import type { Player } from './player';
 import type { KeeperProfile } from './profiles';
 
-export type KeeperState = 'set' | 'react' | 'dive' | 'down' | 'rush';
+export type KeeperState = 'set' | 'react' | 'watch' | 'dive' | 'down' | 'rush';
 
 /**
  * Goalkeeper brain. The keeper never reads the true ball destination: he perceives the ball with lag,
@@ -24,6 +24,8 @@ export class KeeperBrain {
   noiseY = 0;
   noiseTimer = 0;
   distributeTimer = 0;
+  /** Hold time (s) by which the keeper releases a ball held in hand. Above 8 s he concedes a corner. */
+  releaseBy = 5.5;
   penaltyGuess = 0;
   penaltyMode = false;
 
@@ -81,6 +83,16 @@ export function updateKeeper(k: Player, m: Match, dt: number) {
     g.timer -= dt;
     k.vx = k.vy = 0;
     if (g.timer <= 0) g.state = 'set';
+    return;
+  }
+  if (g.state === 'watch') {
+    // Read the shot as going wide: he holds his ground, then gets one late second reaction.
+    g.timer -= dt;
+    k.steerTo(k.x, k.y, 0, false);
+    if (g.timer <= 0) {
+      g.state = 'set';
+      if (b.kind === 'shot') g.seenShot = -1;
+    }
     return;
   }
 
@@ -196,7 +208,11 @@ function commitToShot(k: Player, m: Match, prof: KeeperProfile) {
       pz = rand(5, 40);
     }
   }
-  if (Math.abs(py - CY) > GOAL_HALF + 26) return;
+  if (Math.abs(py - CY) > GOAL_HALF + 26) {
+    g.state = 'watch';
+    g.timer = rand(0.16, 0.3) + prof.reaction * 0.5;
+    return;
+  }
   const lateral = py - k.y;
   if (Math.abs(lateral) < 20 && pz < 58) {
     k.steerTo(k.x, py, 1, false, 6);
@@ -204,7 +220,8 @@ function commitToShot(k: Player, m: Match, prof: KeeperProfile) {
   }
   const side = Math.sign(lateral);
   const needed = Math.abs(lateral);
-  const v = prof.diveSpeed * clamp(needed / 70, 0.65, 1.15);
+  // Dive just far enough for the hands to meet the read point (travel ≈ 0.27·v over the dive).
+  const v = clamp((needed - 12) / 0.27, 110, prof.diveSpeed * 1.1);
   g.state = 'dive';
   g.timer = 0.48;
   g.diveVY = side * v;
@@ -222,19 +239,21 @@ export function keeperContact(k: Player, m: Match) {
   if (!b.free || b.kickAge < 0.03 && b.kicker === k) return false;
   if (b.kicker === k && b.kickAge < 0.4) return false;
   const prof = keeperProfile(k);
-  let hx = k.x;
-  let hy = k.y;
   let radius = PLAYER_R + BALL_R + 6;
   let maxZ = 72;
+  let d: number;
   if (g.state === 'dive') {
-    hy = k.y + g.diveSide * 16;
-    radius = PLAYER_R + BALL_R + 12;
+    // Stretched body: from the hips to the fingertips along the dive side.
+    radius = BALL_R + 9;
     maxZ = g.diveHigh ? 64 : 40;
-  } else if (g.state === 'down') {
-    radius = PLAYER_R + BALL_R + 4;
-    maxZ = 16;
+    d = distToSegment(b.x, b.y, k.x, k.y - g.diveSide * 4, k.x, k.y + g.diveSide * 25);
+  } else {
+    if (g.state === 'down') {
+      radius = PLAYER_R + BALL_R + 4;
+      maxZ = 16;
+    }
+    d = dist(k.x, k.y, b.x, b.y);
   }
-  const d = dist(hx, hy, b.x, b.y);
   if (d > radius || b.z > maxZ) return false;
 
   const speed = b.speed;
@@ -311,9 +330,11 @@ function keeperWithBall(k: Player, m: Match, dt: number) {
   k.stop();
   k.facing = team.dir > 0 ? 0 : Math.PI;
   if (m.state !== 'live') return;
+  // The human player distributes his own keeper's catches (and owns the 8-second risk).
+  if (b.held && team === m.humanTeam) return;
   g.distributeTimer -= dt;
-  // Wait for teammates to offer options, but never approach the 8-second limit.
-  const urgent = b.held && b.holdTime > 5.5;
+  // Wait for teammates to offer options; a careless keeper may lose track of the 8-second limit.
+  const urgent = b.held && b.holdTime > g.releaseBy;
   if (g.distributeTimer > 0 && !urgent) return;
   let best: Player | null = null;
   let bestScore = -1;

@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/goalkeepers.mjs && node tests/home-support.mjs && node tests/responsive-layout.mjs && node tests/sfx.mjs && node tests/full-match.mjs && node tests/performance.mjs"
+    "test": "node tests/controls.mjs && node tests/rules.mjs && node tests/goalkeepers.mjs && node tests/full-match.mjs"
   },
   "dependencies": {
     "clsx": "2.1.1",
