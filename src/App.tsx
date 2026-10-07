@@ -222,7 +222,7 @@ export default function App() {
           {phase === 'playing' && isTouch && hud.time > DIFFICULTY[diff].time - 9 && (
             <div className="absolute top-[86px] right-2 text-right pointer-events-none text-[9px] leading-relaxed uppercase tracking-widest text-white/50">
               <div>◐ Glissez à gauche pour courir</div>
-              <div>◆ Maintenez TIR pour la puissance</div>
+              <div>◆ Appui bref : passe · maintenir : tir</div>
               <div className="text-cyan-200/70">✦ ESQUIVE = invincible + points</div>
             </div>
           )}
@@ -234,7 +234,7 @@ export default function App() {
                 <div>
                   <div className="text-[10px] tracking-[0.5em] text-sky-300 uppercase">Football d’arcade</div>
                   <h1 className="text-5xl sm:text-6xl font-black italic tracking-tight bg-gradient-to-b from-white to-sky-300 bg-clip-text text-transparent">eFOOTBALL<br />STRIKER</h1>
-                  <p className="text-white/60 text-sm mt-2">Foncez, esquivez, marquez. La montre tourne — chaque but offre +4 secondes.</p>
+                  <p className="text-white/60 text-sm mt-2">Match arcade 5v5 sur terrain complet. Passez d’un appui bref, chargez votre frappe, et défendez votre but !</p>
                 </div>
 
                 <div>
@@ -258,7 +258,7 @@ export default function App() {
 
                 <div className="grid grid-cols-2 gap-1.5 text-[11px] text-white/70">
                   <Key label="Courir" keys="WASD / Flèches" />
-                  <Key label="Tirer" keys="Maintenir ESPACE" />
+                  <Key label="Passe / tir" keys="Appui bref / maintenir" />
                   <Key label="Esquiver" keys="MAJ / K (×2 pts)" />
                   <Key label="Pause" keys="P / ÉCHAP" />
                   <Key label="Tactile" keys="Gauche: stick" />

@@ -8,17 +8,18 @@ Développé avec **React 19**, **TypeScript**, **Vite**, **Tailwind CSS v4** et 
 
 ## 🎮 Fonctionnalités
 
-- **Moteur de jeu sur Canvas 2D fluide (60 FPS)** avec physique de balle réaliste, effets de rotation (spin) et rebonds.
-- **Système de tir avancé** :
-  - Barre de jauge de puissance dynamique
-  - *Perfect Shot* (tir parfait dans la zone dorée) pour des frappes foudroyantes et imparables
-  - Tirs lobés et tirs brossés
-- **Gameplay d’arcade complet** :
+- **Match arcade 5v5 sur terrain complet**, avec ligne médiane, deux surfaces de réparation, deux buts et caméra à défilement fluide.
+- **Équipe du joueur** : quatre joueurs de champ, sélection automatique du joueur le plus proche du ballon et soutien des coéquipiers.
+- **Passes et frappes** :
+  - Appui bref sur le bouton d’action pour passer vers un coéquipier dans la direction visée.
+  - Maintien puis relâchement pour charger et tirer ; jauge de puissance et *Perfect Shot*.
+  - Le receveur d’une passe est sélectionné automatiquement et se place sur sa trajectoire.
+- **IA adverse** : pressing et repli défensif, courses avec le ballon, recherche de passes libres et tirs vers le but du joueur.
+- **Deux gardiens** : fermeture d’angle, plongeons vers l’intersection prévue, parades et prises de balle suivies d’une relance.
+- **Gameplay d’arcade** :
   - Dribbles réactifs et esquives (Dash) avec jauge d'endurance
-  - Gardien de but intelligent avec plongeons et arrêts réflexes
-  - Défenseurs adverses qui pressent et tentent de vous subtiliser le ballon
   - Système de combo et multiplicateurs de score en chaîne
-  - Vagues d'attaque successives avec montée progressive de la difficulté
+  - Buts qui modifient le chronomètre et la difficulté qui progresse
 - **Bonus & Objets à ramasser** :
   - ⏱️ **+Temps** : secondes bonus ajoutées au chrono
   - ⚡ **Vitesse** : boost d'accélération
@@ -41,7 +42,7 @@ Développé avec **React 19**, **TypeScript**, **Vite**, **Tailwind CSS v4** et 
 | Action | Touches |
 |---|---|
 | **Déplacement** | Touches directionnelles / `Z, Q, S, D` ou `W, A, S, D` |
-| **Charger / Tirer** | `Espace`, `J`, `X` ou `Entrée` |
+| **Passe / Tir** | Appui bref (`< 250 ms`) / maintenir `Espace`, `J`, `X` ou `Entrée` |
 | **Dash (Accélération / Esquive)** | `Shift` (Maj), `K` ou `L` |
 | **Pause** | `Échap` ou `P` |
 | **Recommencer** | `R` |
@@ -49,7 +50,7 @@ Développé avec **React 19**, **TypeScript**, **Vite**, **Tailwind CSS v4** et 
 ### Sur Écran Tactile / Mobile
 
 - **Joystick virtuel** : Touchez et glissez sur le côté gauche de l'écran.
-- **Bouton Tir** : Maintenez pour charger la puissance, relâchez pour déclencher la frappe.
+- **Bouton d’action** : Appui bref pour passer dans la direction du joystick ; maintenez puis relâchez pour tirer.
 - **Bouton Dash** : Appuyez pour une accélération fulgurante.
 
 ---
