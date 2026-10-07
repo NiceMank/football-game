@@ -4,15 +4,19 @@ Prototype de football arcade construit avec **React**, **TypeScript**, **Vite** 
 
 ## Gameplay actuellement opérationnel
 
-Le moteur conserve la base Phase 0 (terrain monde **800 × 1200**, viewport **480 × 720**, équipes de quatre joueurs de champ et un gardien, caméra clampée et contrôles clavier/tactiles) et ajoute le cœur jouable du match :
+Le moteur conserve la base Phase 0 (terrain monde **800 × 1200**, viewport **480 × 720**, quatre joueurs de champ et un gardien visuel par équipe, caméra clampée et contrôles clavier/tactiles) et propose :
 
-- déplacement du joueur actif et dribble avec ballon légèrement devant/sur le côté, qui s’étire à la course puis revient sous contrôle ;
-- possession attribuée à un joueur, récupération conditionnelle et courte protection anti-bascule lors d’un nouveau contrôle ;
-- passe courte sur pression brève : le moteur choisit un coéquipier selon l’orientation visée, la distance, la progression, l’espace libre et les adversaires dans la ligne ; la trajectoire est légèrement assistée ;
-- réception assistée : le destinataire devient le joueur actif, anticipe le ballon et le contrôle si la trajectoire passe à proximité ;
-- tir chargé sur pression maintenue, avec puissance influencée par la charge, la visée/l’orientation et la distance du but ; la zone verte de charge permet de déclencher un tir parfait ;
-- buts détectés uniquement lorsque le ballon franchit l’ouverture, score mis à jour, pulsation de but en coordonnées monde puis coup d’envoi à l’autre équipe ;
-- adversaires capables de se déplacer, défendre, tacler et récupérer le ballon. Ils n’ont pas encore d’IA offensive complète.
+- déplacement humain, dribble avec ballon maintenu devant/sur le côté, possession par joueur, récupération conditionnelle et verrou anti-bascule ;
+- passes humaines orientées avec choix du partenaire selon la visée, la distance, la progression, l’espace et le couloir d’adversaires ; réception anticipée et changement automatique de joueur actif ;
+- tirs chargés avec puissance, visée assistée, zone de tir parfait et distinctions de puissance ;
+- **équipe adverse tactique** : quand elle défend, un seul joueur presse tandis que les autres couvrent les espaces, l’axe et les joueurs home ; le presser tente des tacles avec distance, réaction, cooldown et réussite probabiliste ;
+- quand away récupère le ballon, elle passe en mode attaque : le porteur avance dans un couloir libre, peut passer sous pression à un coéquipier mieux placé, ou tirer près de la surface si l’angle et la pression le permettent ; les passes ont une précision variable et les tirs visent plusieurs zones du but ;
+- changement immédiat de phase après perte/récupération et retour des joueurs non contrôlés home à leur formation ;
+- buts, tirs à côté, pulsation de célébration en coordonnées monde et coup d’envoi à l’autre équipe.
+
+### Difficulté adverse
+
+Choix avant le match : **Amateur**, **Pro** ou **Légende**. La difficulté influe sur les délais de réaction et de décision, l’agressivité/portée du pressing, la sélection et la précision des passes, la précision des tirs et la réussite des tacles. Elle **n’augmente pas la vitesse des joueurs**.
 
 La simulation utilise un pas fixe de `1/120 s` et toutes les vitesses/frictions sont intégrées avec `dt`. La friction du ballon reste `Math.pow(0.5, dt)`.
 
@@ -20,19 +24,19 @@ La simulation utilise un pas fixe de `1/120 s` et toutes les vitesses/frictions 
 
 - **Déplacement clavier** : flèches, `WASD` ou `ZQSD`.
 - **Action clavier** : pression courte sur `Espace`, `Entrée`, `J` ou `X` = passe ; maintenir puis relâcher = tir chargé. Relâcher dans la zone verte pour un tir parfait.
-- **Mobile** : glisser sur le côté gauche pour déplacer le joueur ; appuyer brièvement sur le bouton **PASSE / TIR** pour passer ou le maintenir pour charger un tir.
+- **Mobile** : glisser sur le côté gauche pour déplacer le joueur ; appuyer brièvement sur **PASSE / TIR** pour passer ou maintenir le bouton pour charger un tir.
 - **Pause / reprise** : `P`, `Échap` ou le bouton pause.
 - **Recommencer** : `R`.
 
 ## Organisation du moteur
 
-`src/game/engine.ts` contient les structures joueurs/ballon ainsi que la simulation, la sélection du joueur actif, les passes/tirs, les réceptions, les collisions, le score, la caméra et le rendu Canvas. `src/App.tsx` conserve la couche React : entrées, boucle fixe, HUD et interface tactile. `src/game/sfx.ts` fournit des sons Web Audio facultatifs.
+`src/game/engine.ts` contient l’état du match et la simulation : contrôle humain, IA adverse défensive/offensive, passe/réception, tir, collisions, possession, score, caméra et rendu Canvas. `src/App.tsx` conserve la couche React : entrées, boucle fixe, HUD, difficulté et interface tactile. `src/game/sfx.ts` fournit des sons Web Audio facultatifs.
 
-La passe ne choisit pas simplement le coéquipier le plus proche : elle évalue le produit scalaire avec la direction visée, la progression vers le but, l’espace autour du receveur et la proximité des adversaires dans le couloir de passe.
+Les joueurs adverses gardent leur vitesse définie ; la difficulté améliore les décisions et la qualité d’exécution plutôt que les statistiques de déplacement.
 
 ## Limites actuelles
 
-Les joueurs adverses reviennent à leurs formations et défendent par proximité/tacle ; ils n’organisent pas de construction offensive. Les gardiens sont dessinés mais n’ont pas encore de comportement de parade/détente. Pas de chronomètre de match ni de règles de touche/corner.
+Les gardiens sont dessinés mais n’ont pas encore de comportement de déplacement/parade. Pas de chronomètre, touches/corners ou règles complètes de match. Le système tactique porte sur les joueurs de champ.
 
 ## Lancer le projet
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type TouchEvent } from 'react';
-import { Game, H, W, type HudState, type Input, type Phase } from './game/engine';
+import { Game, H, W, type Difficulty, type HudState, type Input, type Phase } from './game/engine';
 import { playSfx, unlockAudio } from './game/sfx';
 
 interface JoystickTouch {
@@ -13,6 +13,11 @@ interface JoystickTouch {
 const FIXED_STEP = 1 / 120;
 const JOYSTICK_RADIUS = 50;
 const ACTION_CODES = ['Space', 'Enter', 'KeyJ', 'KeyX'] as const;
+const DIFFICULTY_OPTIONS: { value: Difficulty; label: string }[] = [
+  { value: 'amateur', label: 'Amateur' },
+  { value: 'pro', label: 'Pro' },
+  { value: 'legend', label: 'Légende' },
+];
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -23,6 +28,7 @@ export default function App() {
   const actionTouchRef = useRef<number | null>(null);
 
   const [phase, setPhase] = useState<Phase>('start');
+  const [difficulty, setDifficulty] = useState<Difficulty>('pro');
   const [hud, setHud] = useState<HudState>(() => game.hud());
   const [joystickView, setJoystickView] = useState<JoystickTouch | null>(null);
   const [touchMode, setTouchMode] = useState(false);
@@ -52,9 +58,10 @@ export default function App() {
     unlockAudio();
     if (!muted) playSfx('ui');
     clearInput();
+    game.setDifficulty(difficulty);
     game.start();
     setPhase('playing');
-  }, [clearInput, muted]);
+  }, [clearInput, difficulty, game, muted]);
 
   const togglePause = useCallback(() => {
     game.togglePause();
@@ -245,7 +252,7 @@ export default function App() {
             <div className="pointer-events-none absolute inset-0">
               <div className="absolute inset-x-0 top-0 flex justify-center p-2">
                 <div className="rounded-xl border border-white/10 bg-black/55 px-5 py-2 text-center backdrop-blur">
-                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/60">eFootball · 5v5</div>
+                  <div className="text-[9px] uppercase tracking-[0.2em] text-white/60">IA {hud.difficulty === 'legend' ? 'légende' : hud.difficulty} · {hud.awayMode === 'attacking' ? 'attaque' : 'défense'}</div>
                   <div className="text-xl font-black tabular-nums leading-none">{hud.homeScore} : {hud.awayScore}</div>
                   <div className="mt-1 text-[9px] uppercase tracking-[0.15em] text-amber-200">{hud.goalCelebration ? 'BUT !' : `Ballon : ${possessionLabel}`}</div>
                 </div>
@@ -303,7 +310,30 @@ export default function App() {
                   <div><b className="text-white">Déplacement :</b> ZQSD / WASD ou flèches.</div>
                   <div><b className="text-white">Action :</b> pression courte = passe directionnelle ; maintenir = tir chargé. Relâchez dans la zone verte pour un tir parfait.</div>
                   <div><b className="text-white">Touches :</b> Espace, Entrée, J ou X. Sur mobile, stick gauche + bouton PASSE / TIR.</div>
-                  <div className="mt-2 text-amber-100/80">P / Échap : pause · R : recommencer. Les adversaires défendent et peuvent récupérer le ballon.</div>
+                  <div className="mt-2 text-amber-100/80">P / Échap : pause · R : recommencer. L’adversaire construit, combine et revient défendre après perte.</div>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-left">
+                  <div className="mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-white/65">Difficulté de l’adversaire</div>
+                  <div className="flex gap-2">
+                    {DIFFICULTY_OPTIONS.map(option => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-pressed={difficulty === option.value}
+                        onClick={() => { setDifficulty(option.value); game.setDifficulty(option.value); }}
+                        className={`flex-1 rounded-lg border px-2 py-2 text-xs font-black transition ${difficulty === option.value ? 'border-amber-200 bg-amber-400 text-slate-950' : 'border-white/10 bg-black/25 text-white/65 hover:bg-white/10'}`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-2 text-[10px] leading-relaxed text-white/55">
+                    {difficulty === 'amateur'
+                      ? 'Réactions plus lentes, pressing modéré et passes/tirs moins précis.'
+                      : difficulty === 'legend'
+                        ? 'Réactions et placement améliorés, pressing plus agressif et meilleure précision — sans bonus de vitesse.'
+                        : 'Équilibre entre pressing, réactions, placement et précision.'}
+                  </div>
                 </div>
                 <button
                   onClick={startGame}

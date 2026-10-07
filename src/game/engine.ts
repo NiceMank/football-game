@@ -30,6 +30,8 @@ export type TeamPossession = TeamType | 'neutral';
 export type Phase = 'start' | 'playing' | 'paused';
 export type PlayerRole = 'defender' | 'midfielder' | 'forward';
 export type PlayerState = 'idle' | 'running' | 'receiving' | 'passing' | 'shooting' | 'tackling' | 'stunned';
+export type Difficulty = 'amateur' | 'pro' | 'legend';
+export type AwayMode = 'defending' | 'attacking';
 
 export interface Input {
   dx: number;
@@ -56,8 +58,9 @@ export interface FootballPlayer {
   angle: number;
   formationX: number;
   formationY: number;
-  /** Reserved for the later reactive team AI. */
+  /** Tactical decision cadence and reaction delay for non-human team behaviors. */
   aiDecisionTimer: number;
+  aiReactionTimer: number;
   tackleCooldown: number;
   stunTimer: number;
 }
@@ -97,9 +100,72 @@ export interface HudState {
   charging: boolean;
   perfectShot: boolean;
   goalCelebration: TeamType | null;
+  difficulty: Difficulty;
+  awayMode: AwayMode;
 }
 
 interface FormationSlot { x: number; y: number; role: PlayerRole }
+
+interface AIDifficultyProfile {
+  decisionInterval: number;
+  reactionDelay: number;
+  pressRange: number;
+  pressOffset: number;
+  tackleChance: number;
+  failedTackleCooldown: number;
+  successfulTackleCooldown: number;
+  passPressureDistance: number;
+  passError: number;
+  passLaneMinimum: number;
+  passSkill: number;
+  betterPassThreshold: number;
+  shotDistance: number;
+  shotPressureDistance: number;
+  shotAngleLimit: number;
+  shotError: number;
+  shotPowerMin: number;
+  shotPowerMax: number;
+  coverBallShift: number;
+}
+
+interface PassOption {
+  player: FootballPlayer;
+  score: number;
+  laneClearance: number;
+  distance: number;
+}
+
+const TACKLE_MIN_DISTANCE = 12;
+const TACKLE_MAX_DISTANCE = PLAYER_COLLISION_DISTANCE + 8;
+const TACKLE_REACTION_DISTANCE = 104;
+const TACKLE_REARM_DISTANCE = 132;
+
+const AI_PROFILES: Record<Difficulty, AIDifficultyProfile> = {
+  amateur: {
+    decisionInterval: 0.48, reactionDelay: 0.52, pressRange: 230, pressOffset: 30,
+    tackleChance: 0.29, failedTackleCooldown: 0.98, successfulTackleCooldown: 1.12,
+    passPressureDistance: 88, passError: 0.11, passLaneMinimum: 8, passSkill: 0.78,
+    betterPassThreshold: 2.3, shotDistance: 255, shotPressureDistance: 54,
+    shotAngleLimit: 0.5, shotError: 0.27, shotPowerMin: 0.55, shotPowerMax: 0.82,
+    coverBallShift: 0.12,
+  },
+  pro: {
+    decisionInterval: 0.3, reactionDelay: 0.32, pressRange: 320, pressOffset: 26,
+    tackleChance: 0.43, failedTackleCooldown: 0.74, successfulTackleCooldown: 0.88,
+    passPressureDistance: 112, passError: 0.065, passLaneMinimum: 18, passSkill: 1,
+    betterPassThreshold: 1.15, shotDistance: 300, shotPressureDistance: 78,
+    shotAngleLimit: 0.7, shotError: 0.15, shotPowerMin: 0.62, shotPowerMax: 0.9,
+    coverBallShift: 0.18,
+  },
+  legend: {
+    decisionInterval: 0.18, reactionDelay: 0.18, pressRange: 440, pressOffset: 23,
+    tackleChance: 0.57, failedTackleCooldown: 0.54, successfulTackleCooldown: 0.68,
+    passPressureDistance: 145, passError: 0.03, passLaneMinimum: 30, passSkill: 1.28,
+    betterPassThreshold: 0.7, shotDistance: 340, shotPressureDistance: 100,
+    shotAngleLimit: 0.86, shotError: 0.075, shotPowerMin: 0.68, shotPowerMax: 0.95,
+    coverBallShift: 0.25,
+  },
+};
 
 const HOME_FORMATION: readonly FormationSlot[] = [
   { x: 240, y: 1000, role: 'defender' },
@@ -133,6 +199,7 @@ function createPlayer(id: number, team: TeamType, slot: FormationSlot): Football
     formationX: slot.x,
     formationY: slot.y,
     aiDecisionTimer: 0,
+    aiReactionTimer: 0,
     tackleCooldown: 0,
     stunTimer: 0,
   };
@@ -151,8 +218,8 @@ function createKeeper(team: TeamType): Goalkeeper {
 
 /**
  * Owns match state and coordinates explicit gameplay systems: player control,
- * passing/receiving, charged shots, formations, ball physics, collisions,
- * possession, goals/kickoff, camera and world rendering.
+ * passing/receiving, charged shots, away defensive/offensive tactics, formations,
+ * ball physics, collisions, possession, goals/kickoff, camera and world rendering.
  */
 export class Game {
   phase: Phase = 'start';
@@ -160,6 +227,9 @@ export class Game {
   awayScore = 0;
   possession: TeamPossession = 'neutral';
   activePlayerIndex = 0;
+  difficulty: Difficulty = 'pro';
+  awayMode: AwayMode = 'defending';
+  defensivePresserId: number | null = null;
 
   readonly homeTeam: FootballPlayer[] = [];
   readonly awayTeam: FootballPlayer[] = [];
@@ -191,6 +261,9 @@ export class Game {
   goalCelebrationTimer = 0;
   private actionWasDown = false;
   private kickoffTeam: TeamType = 'home';
+  private presserCarrierId: number | null = null;
+  private presserEngaged = false;
+  private randomState = 0x6d2b79f5;
 
   sfx?: (name: string) => void;
 
@@ -208,6 +281,11 @@ export class Game {
     this.goalCelebrationTeam = null;
     this.resetCharge();
     this.actionWasDown = false;
+    this.awayMode = 'defending';
+    this.defensivePresserId = null;
+    this.presserCarrierId = null;
+    this.presserEngaged = false;
+    this.randomState = 0x6d2b79f5;
     this.createTeams();
     this.resetForKickoff('home');
   }
@@ -215,6 +293,19 @@ export class Game {
   togglePause() {
     if (this.phase === 'playing') this.phase = 'paused';
     else if (this.phase === 'paused') this.phase = 'playing';
+  }
+
+  setDifficulty(difficulty: Difficulty) {
+    this.difficulty = difficulty;
+    this.presserEngaged = false;
+    for (const player of this.awayTeam) {
+      player.aiDecisionTimer = 0;
+      player.aiReactionTimer = 0;
+    }
+  }
+
+  private profile() {
+    return AI_PROFILES[this.difficulty];
   }
 
   hud(): HudState {
@@ -228,6 +319,8 @@ export class Game {
       charging: this.charging,
       perfectShot: this.perfectShot,
       goalCelebration: this.goalCelebrationTimer > 0 ? this.goalCelebrationTeam : null,
+      difficulty: this.difficulty,
+      awayMode: this.awayMode,
     };
   }
 
@@ -297,6 +390,14 @@ export class Game {
     this.ball.targetTeam = null;
     this.ball.targetId = null;
     this.possession = kickingTeam;
+    this.awayMode = kickingTeam === 'away' ? 'attacking' : 'defending';
+    this.defensivePresserId = null;
+    this.presserCarrierId = null;
+    this.presserEngaged = false;
+    if (kickingTeam === 'away') {
+      kicker.aiReactionTimer = this.profile().reactionDelay;
+      kicker.aiDecisionTimer = this.profile().reactionDelay;
+    }
     this.resetCharge();
     this.actionWasDown = false;
     this.goalCelebrationTimer = 0;
@@ -315,6 +416,8 @@ export class Game {
     player.role = slot.role;
     player.state = 'idle';
     player.stateTimer = 0;
+    player.aiDecisionTimer = 0;
+    player.aiReactionTimer = 0;
     player.tackleCooldown = 0;
     player.stunTimer = 0;
     player.formationX = slot.x;
@@ -332,6 +435,8 @@ export class Game {
 
   private updatePlayerTimers(player: FootballPlayer, dt: number) {
     player.stateTimer = Math.max(0, player.stateTimer - dt);
+    player.aiDecisionTimer = Math.max(0, player.aiDecisionTimer - dt);
+    player.aiReactionTimer = Math.max(0, player.aiReactionTimer - dt);
     player.tackleCooldown = Math.max(0, player.tackleCooldown - dt);
     player.stunTimer = Math.max(0, player.stunTimer - dt);
     if (player.stunTimer === 0 && player.state === 'stunned') player.state = 'idle';
@@ -591,12 +696,376 @@ export class Game {
     this.sfx?.(perfect ? 'power' : 'kick');
   }
 
-  /** Home support and away players only return to their fixed phase-0 formations. */
+  /** Home support returns to shape; away teammates follow their current tactical phase. */
   private updateFormationPlayers(dt: number) {
     for (let i = 0; i < this.homeTeam.length; i++) {
       if (i !== this.activePlayerIndex) this.movePlayerToFormation(this.homeTeam[i], dt);
     }
-    for (const player of this.awayTeam) this.movePlayerToFormation(player, dt);
+    this.updateAwayAI(dt);
+  }
+
+  /** Runs the away team's phase-aware tactical movement and possession decisions. */
+  private updateAwayAI(dt: number) {
+    const profile = this.profile();
+    const carrier = this.ball.owner === 'away' ? this.getPlayer('away', this.ball.ownerId) : null;
+    const receiver = this.ball.owner === 'none' && this.ball.targetTeam === 'away'
+      ? this.getPlayer('away', this.ball.targetId)
+      : null;
+
+    if (!carrier && !receiver) {
+      this.awayMode = 'defending';
+      this.updateAwayDefense(dt, profile);
+      return;
+    }
+
+    this.awayMode = 'attacking';
+    this.defensivePresserId = null;
+    this.presserCarrierId = null;
+    this.presserEngaged = false;
+
+    if (carrier) {
+      if (carrier.aiDecisionTimer <= 0 && carrier.aiReactionTimer <= 0) {
+        const pressureDistance = this.nearestHomeDistance(carrier.x, carrier.y);
+        const goalDistance = magnitude(CENTER_X - carrier.x, FIELD_BOTTOM - carrier.y);
+        const goalAngle = Math.atan2(FIELD_BOTTOM - carrier.y, CENTER_X - carrier.x);
+        const angleError = Math.atan2(Math.sin(goalAngle - carrier.angle), Math.cos(goalAngle - carrier.angle));
+        const passOption = this.findBestAwayPassOption(carrier, profile);
+        const laneIsClear = passOption !== null && passOption.laneClearance >= profile.passLaneMinimum;
+        const betterPlaced = passOption !== null
+          && passOption.score >= profile.betterPassThreshold
+          && passOption.player.y > carrier.y + 60
+          && magnitude(CENTER_X - passOption.player.x, FIELD_BOTTOM - passOption.player.y) < goalDistance - 35;
+        const canShoot = carrier.y >= FIELD_BOTTOM - 360
+          && goalDistance <= profile.shotDistance
+          && Math.abs(angleError) <= profile.shotAngleLimit
+          && pressureDistance >= profile.shotPressureDistance;
+
+        if (canShoot) {
+          this.executeAwayShot(carrier, profile);
+          carrier.aiDecisionTimer = profile.decisionInterval;
+        } else if (laneIsClear && passOption
+          && (pressureDistance <= profile.passPressureDistance
+            || (betterPlaced && pressureDistance <= profile.passPressureDistance * 1.45))) {
+          this.executeAwayPass(carrier, passOption.player, profile);
+        } else {
+          carrier.aiDecisionTimer = profile.decisionInterval;
+        }
+      }
+
+      if (this.ball.owner === 'away' && this.ball.ownerId === carrier.id) {
+        this.moveAwayCarrierTowardGoal(dt, carrier);
+        this.moveAwayAttackSupport(dt, carrier.x, carrier.y, carrier.id, null);
+        return;
+      }
+
+      const passReceiver = this.ball.owner === 'none' && this.ball.targetTeam === 'away'
+        ? this.getPlayer('away', this.ball.targetId)
+        : null;
+      if (passReceiver) {
+        this.moveAwayReceiverToBall(dt, passReceiver);
+        this.moveAwayAttackSupport(dt, passReceiver.x, passReceiver.y, null, passReceiver.id);
+        return;
+      }
+
+      this.awayMode = 'defending';
+      this.updateAwayDefense(dt, profile);
+      return;
+    }
+
+    if (receiver) {
+      this.moveAwayReceiverToBall(dt, receiver);
+      this.moveAwayAttackSupport(dt, receiver.x, receiver.y, null, receiver.id);
+    }
+  }
+
+  private updateAwayDefense(dt: number, profile: AIDifficultyProfile) {
+    const homeCarrier = this.ball.owner === 'home' ? this.getPlayer('home', this.ball.ownerId) : null;
+    const objectiveX = homeCarrier?.x ?? this.ball.x;
+    const objectiveY = homeCarrier?.y ?? this.ball.y;
+    const presser = this.selectDefensivePresser(objectiveX, objectiveY, homeCarrier?.id ?? null);
+
+    if (presser) {
+      let targetX = objectiveX;
+      let targetY = homeCarrier ? objectiveY - profile.pressOffset : objectiveY;
+      const distanceToTarget = magnitude(targetX - presser.x, targetY - presser.y);
+      if (distanceToTarget > profile.pressRange) {
+        targetX = presser.formationX + clamp((objectiveX - presser.formationX) * 0.16, -64, 64);
+        targetY = presser.formationY + clamp((objectiveY - presser.formationY) * 0.12, -44, 52);
+      }
+      this.movePlayerToTarget(presser, targetX, targetY, dt);
+
+      if (homeCarrier) {
+        const distanceToCarrier = magnitude(presser.x - homeCarrier.x, presser.y - homeCarrier.y);
+        if (distanceToCarrier <= TACKLE_REACTION_DISTANCE && !this.presserEngaged) {
+          presser.aiReactionTimer = profile.reactionDelay;
+          this.presserEngaged = true;
+        } else if (distanceToCarrier > TACKLE_REARM_DISTANCE && this.presserEngaged) {
+          presser.aiReactionTimer = 0;
+          this.presserEngaged = false;
+        }
+      } else {
+        presser.aiReactionTimer = 0;
+        this.presserEngaged = false;
+      }
+    }
+
+    this.moveAwayDefensiveCover(dt, presser?.id ?? null, homeCarrier, objectiveX, objectiveY, profile);
+  }
+
+  private selectDefensivePresser(targetX: number, targetY: number, carrierId: number | null) {
+    let nearest: FootballPlayer | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const player of this.awayTeam) {
+      const distance = magnitude(player.x - targetX, player.y - targetY);
+      if (distance < nearestDistance) { nearest = player; nearestDistance = distance; }
+    }
+
+    const current = this.getPlayer('away', this.defensivePresserId);
+    let selected = nearest;
+    if (current && this.presserCarrierId === carrierId) {
+      const currentDistance = magnitude(current.x - targetX, current.y - targetY);
+      if (currentDistance <= nearestDistance + 32) selected = current;
+    }
+
+    if (selected && (selected.id !== this.defensivePresserId || this.presserCarrierId !== carrierId)) {
+      this.defensivePresserId = selected.id;
+      this.presserCarrierId = carrierId;
+      this.presserEngaged = false;
+      selected.aiReactionTimer = 0;
+    }
+    return selected;
+  }
+
+  private moveAwayDefensiveCover(
+    dt: number,
+    presserId: number | null,
+    homeCarrier: FootballPlayer | null,
+    objectiveX: number,
+    objectiveY: number,
+    profile: AIDifficultyProfile,
+  ) {
+    for (const defender of this.awayTeam) {
+      if (defender.id === presserId) continue;
+
+      let marked: FootballPlayer | null = null;
+      let markDistanceSquared = Number.POSITIVE_INFINITY;
+      for (const homePlayer of this.homeTeam) {
+        if (homeCarrier && homePlayer.id === homeCarrier.id) continue;
+        const dx = homePlayer.x - defender.formationX;
+        const dy = homePlayer.y - defender.formationY;
+        const distanceSquared = dx * dx + dy * dy;
+        if (distanceSquared < markDistanceSquared) {
+          marked = homePlayer;
+          markDistanceSquared = distanceSquared;
+        }
+      }
+
+      const ballShiftX = clamp((objectiveX - CENTER_X) * profile.coverBallShift, -72, 72);
+      const ballShiftY = clamp((objectiveY - CENTER_Y) * 0.075, -32, 48);
+      const markShiftX = marked ? clamp((marked.x - defender.formationX) * 0.1, -32, 32) : 0;
+      const markShiftY = marked ? clamp((marked.y - defender.formationY) * 0.08, -26, 34) : 0;
+      const axisShiftX = (CENTER_X - defender.formationX) * 0.08;
+      const targetX = clamp(defender.formationX + ballShiftX + markShiftX + axisShiftX, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
+      const targetY = clamp(defender.formationY + ballShiftY + markShiftY, FIELD_TOP + PLAYER_RADIUS, CENTER_Y + 125);
+      this.movePlayerToTarget(defender, targetX, targetY, dt);
+    }
+  }
+
+  private moveAwayCarrierTowardGoal(dt: number, carrier: FootballPlayer) {
+    const targetY = clamp(carrier.y + 175, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+    const centralX = carrier.x + (CENTER_X - carrier.x) * 0.28;
+    let bestX = clamp(centralX, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (let lane = -1; lane <= 1; lane++) {
+      const candidateX = clamp(centralX + lane * 88, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
+      const space = this.nearestHomeDistance(candidateX, targetY);
+      const score = space - Math.abs(candidateX - CENTER_X) * 0.3 - Math.abs(candidateX - carrier.x) * 0.05;
+      if (score > bestScore) { bestScore = score; bestX = candidateX; }
+    }
+    this.movePlayerToTarget(carrier, bestX, targetY, dt);
+  }
+
+  private moveAwayReceiverToBall(dt: number, receiver: FootballPlayer) {
+    const ballSpeed = magnitude(this.ball.vx, this.ball.vy);
+    const distance = magnitude(this.ball.x - receiver.x, this.ball.y - receiver.y);
+    const leadTime = clamp(distance / Math.max(120, ballSpeed), 0.08, 0.5);
+    const targetX = clamp(this.ball.x + this.ball.vx * leadTime, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
+    const targetY = clamp(this.ball.y + this.ball.vy * leadTime, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+    this.movePlayerToTarget(receiver, targetX, targetY, dt);
+  }
+
+  private moveAwayAttackSupport(
+    dt: number,
+    anchorX: number,
+    anchorY: number,
+    carrierId: number | null,
+    receiverId: number | null,
+  ) {
+    for (const support of this.awayTeam) {
+      if (support.id === carrierId || support.id === receiverId) continue;
+      const forwardOffset = support.role === 'forward' ? 170 : support.role === 'midfielder' ? 42 : -105;
+      const targetX = clamp(support.formationX * 0.6 + anchorX * 0.4, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
+      const targetY = clamp(anchorY + forwardOffset, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+      this.movePlayerToTarget(support, targetX, targetY, dt);
+    }
+  }
+
+  private findBestAwayPassOption(carrier: FootballPlayer, profile: AIDifficultyProfile): PassOption | null {
+    let best: PassOption | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const teammate of this.awayTeam) {
+      if (teammate.id === carrier.id) continue;
+      const dx = teammate.x - carrier.x;
+      const dy = teammate.y - carrier.y;
+      const distance = magnitude(dx, dy);
+      if (distance < 62 || distance > 560) continue;
+
+      const forwardAlignment = dy / distance;
+      let nearestHome = Number.POSITIVE_INFINITY;
+      for (const homePlayer of this.homeTeam) {
+        const defenderDistance = magnitude(homePlayer.x - teammate.x, homePlayer.y - teammate.y);
+        if (defenderDistance < nearestHome) nearestHome = defenderDistance;
+      }
+      const laneClearance = this.passLaneClearance(carrier.x, carrier.y, teammate.x, teammate.y, this.homeTeam);
+      const progress = clamp((teammate.y - carrier.y) / 360, -1, 1);
+      const spaceScore = clamp(nearestHome / 155, 0, 1.4) * 0.95;
+      const goalProximity = clamp((teammate.y - CENTER_Y + 100) / 500, -0.3, 1) * 0.4;
+      const lanePenalty = clamp((profile.passLaneMinimum - laneClearance) / Math.max(1, profile.passLaneMinimum), 0, 1) * (1.3 + profile.passSkill * 0.55);
+      const score = forwardAlignment * (2.1 + profile.passSkill * 0.55)
+        + progress * (0.62 + profile.passSkill * 0.18)
+        + spaceScore * (0.8 + profile.passSkill * 0.2)
+        + goalProximity * 0.4
+        - distance * (0.00165 - profile.passSkill * 0.00012)
+        - lanePenalty;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { player: teammate, score, laneClearance, distance };
+      }
+    }
+    return best;
+  }
+
+  private passLaneClearance(x1: number, y1: number, x2: number, y2: number, defenders: readonly FootballPlayer[]) {
+    const segmentX = x2 - x1;
+    const segmentY = y2 - y1;
+    const lengthSquared = segmentX * segmentX + segmentY * segmentY;
+    if (lengthSquared < 1) return 0;
+    let nearest = Number.POSITIVE_INFINITY;
+    for (const defender of defenders) {
+      const projection = clamp(((defender.x - x1) * segmentX + (defender.y - y1) * segmentY) / lengthSquared, 0, 1);
+      const dx = x1 + projection * segmentX - defender.x;
+      const dy = y1 + projection * segmentY - defender.y;
+      const distance = magnitude(dx, dy);
+      if (distance < nearest) nearest = distance;
+    }
+    return nearest;
+  }
+
+  private executeAwayPass(passer: FootballPlayer, receiver: FootballPlayer, profile: AIDifficultyProfile) {
+    const distance = magnitude(receiver.x - passer.x, receiver.y - passer.y);
+    const speed = clamp(370 + distance * 0.64, 410, 690);
+    const leadTime = clamp(distance / speed * 0.2, 0.08, 0.2);
+    const targetX = receiver.x + receiver.vx * leadTime;
+    const targetY = receiver.y + receiver.vy * leadTime;
+    const baseAngle = Math.atan2(targetY - passer.y, targetX - passer.x);
+    const angle = baseAngle + this.randomSigned() * profile.passError;
+    const ball = this.ball;
+    ball.x = clamp(passer.x + Math.cos(angle) * BALL_OFFSET, FIELD_LEFT + BALL_RADIUS, FIELD_RIGHT - BALL_RADIUS);
+    ball.y = clamp(passer.y + Math.sin(angle) * BALL_OFFSET, FIELD_TOP - GOAL_DEPTH, FIELD_BOTTOM + GOAL_DEPTH);
+    ball.vx = Math.cos(angle) * speed + passer.vx * 0.12;
+    ball.vy = Math.sin(angle) * speed + passer.vy * 0.12;
+    ball.owner = 'none';
+    ball.ownerId = null;
+    ball.lastTouchTeam = 'away';
+    ball.acquisitionCooldown = 0.06;
+    ball.ownerLockTimer = 0;
+    ball.targetTeam = 'away';
+    ball.targetId = receiver.id;
+    this.possession = 'away';
+    this.awayMode = 'attacking';
+    passer.state = 'passing';
+    passer.stateTimer = 0.25;
+    passer.aiDecisionTimer = profile.decisionInterval;
+    receiver.state = 'receiving';
+    receiver.stateTimer = 0.35;
+    this.sfx?.('kick');
+  }
+
+  private executeAwayShot(shooter: FootballPlayer, profile: AIDifficultyProfile) {
+    const zoneRoll = this.random01();
+    const zoneOffset = zoneRoll < 1 / 3 ? -GOAL_WIDTH * 0.27 : zoneRoll < 2 / 3 ? 0 : GOAL_WIDTH * 0.27;
+    const targetX = clamp(CENTER_X + zoneOffset + this.randomSigned() * 12, CENTER_X - GOAL_WIDTH * 0.36, CENTER_X + GOAL_WIDTH * 0.36);
+    const targetY = FIELD_BOTTOM + 4;
+    const angle = Math.atan2(targetY - shooter.y, targetX - shooter.x) + this.randomSigned() * profile.shotError;
+    const power = profile.shotPowerMin + this.random01() * (profile.shotPowerMax - profile.shotPowerMin);
+    const speed = 520 + power * 430;
+    const ball = this.ball;
+    ball.x = clamp(shooter.x + Math.cos(angle) * BALL_OFFSET, FIELD_LEFT + BALL_RADIUS, FIELD_RIGHT - BALL_RADIUS);
+    ball.y = clamp(shooter.y + Math.sin(angle) * BALL_OFFSET, FIELD_TOP - GOAL_DEPTH, FIELD_BOTTOM + GOAL_DEPTH);
+    ball.vx = Math.cos(angle) * speed + shooter.vx * 0.1;
+    ball.vy = Math.sin(angle) * speed + shooter.vy * 0.1;
+    ball.owner = 'none';
+    ball.ownerId = null;
+    ball.lastTouchTeam = 'away';
+    ball.acquisitionCooldown = 0.12;
+    ball.ownerLockTimer = 0;
+    ball.targetTeam = null;
+    ball.targetId = null;
+    this.possession = 'neutral';
+    this.awayMode = 'defending';
+    shooter.state = 'shooting';
+    shooter.stateTimer = 0.3;
+    shooter.aiDecisionTimer = profile.decisionInterval;
+    this.sfx?.('kick');
+  }
+
+  private nearestHomeDistance(x: number, y: number) {
+    let nearestSquared = Number.POSITIVE_INFINITY;
+    for (const player of this.homeTeam) {
+      const dx = player.x - x;
+      const dy = player.y - y;
+      const distanceSquared = dx * dx + dy * dy;
+      if (distanceSquared < nearestSquared) nearestSquared = distanceSquared;
+    }
+    return Math.sqrt(nearestSquared);
+  }
+
+  private movePlayerToTarget(player: FootballPlayer, targetX: number, targetY: number, dt: number) {
+    if (player.stunTimer > 0) return;
+    const minX = FIELD_LEFT + PLAYER_RADIUS;
+    const maxX = FIELD_RIGHT - PLAYER_RADIUS;
+    const minY = FIELD_TOP + PLAYER_RADIUS;
+    const maxY = FIELD_BOTTOM - PLAYER_RADIUS;
+    const dx = clamp(targetX, minX, maxX) - player.x;
+    const dy = clamp(targetY, minY, maxY) - player.y;
+    const distance = magnitude(dx, dy);
+    const targetSpeed = Math.min(player.speed, distance * 2.8);
+    const targetVx = distance > 0.001 ? dx / distance * targetSpeed : 0;
+    const targetVy = distance > 0.001 ? dy / distance * targetSpeed : 0;
+    const blend = 1 - Math.exp(-7 * dt);
+    player.vx += (targetVx - player.vx) * blend;
+    player.vy += (targetVy - player.vy) * blend;
+    this.movePlayerByVelocity(player, dt);
+    const speed = magnitude(player.vx, player.vy);
+    if (speed > 8) {
+      player.angle = Math.atan2(player.vy, player.vx);
+      player.state = player.stunTimer > 0 ? 'stunned' : 'running';
+    } else if (player.stunTimer === 0) {
+      player.state = 'idle';
+    }
+  }
+
+  private random01() {
+    let value = this.randomState | 0;
+    value ^= value << 13;
+    value ^= value >>> 17;
+    value ^= value << 5;
+    this.randomState = value >>> 0;
+    return this.randomState / 0x100000000;
+  }
+
+  private randomSigned() {
+    return this.random01() * 2 - 1;
   }
 
   private movePlayerToFormation(player: FootballPlayer, dt: number) {
@@ -739,7 +1208,26 @@ export class Game {
         const dx = carrier.x - challenger.x;
         const dy = carrier.y - challenger.y;
         const distance = magnitude(dx, dy);
-        if (distance > PLAYER_COLLISION_DISTANCE + 2) continue;
+        if (carrier.team === 'home' && challenger.team === 'away') {
+          if (challenger.id !== this.defensivePresserId
+            || distance < TACKLE_MIN_DISTANCE
+            || distance > TACKLE_MAX_DISTANCE
+            || challenger.aiReactionTimer > 0) continue;
+          const profile = this.profile();
+          const carrierSpeedRatio = clamp(magnitude(carrier.vx, carrier.vy) / Math.max(1, carrier.speed), 0, 1);
+          const successChance = clamp(profile.tackleChance - carrierSpeedRatio * 0.1, 0.12, 0.72);
+          if (this.random01() > successChance) {
+            challenger.tackleCooldown = profile.failedTackleCooldown;
+            challenger.aiReactionTimer = profile.reactionDelay * 0.5;
+            challenger.state = 'tackling';
+            challenger.stateTimer = 0.22;
+            this.presserEngaged = true;
+            this.sfx?.('tackle');
+            return;
+          }
+        } else if (distance > PLAYER_COLLISION_DISTANCE + 2) {
+          continue;
+        }
 
         const nx = distance > 0.001 ? dx / distance : (carrier.team === 'home' ? 1 : -1);
         const ny = distance > 0.001 ? dy / distance : 0;
@@ -755,7 +1243,17 @@ export class Game {
         ball.vy = carrier.vy * 0.25 + ny * 165;
         ball.acquisitionCooldown = 0.12;
         this.possession = 'neutral';
-        challenger.tackleCooldown = 0.55;
+        if (carrier.team === 'away') {
+          this.awayMode = 'defending';
+          this.defensivePresserId = null;
+          this.presserCarrierId = null;
+          this.presserEngaged = false;
+        }
+        challenger.tackleCooldown = carrier.team === 'home' && challenger.team === 'away'
+          ? this.profile().successfulTackleCooldown
+          : 0.55;
+        challenger.state = 'tackling';
+        challenger.stateTimer = 0.2;
         carrier.tackleCooldown = 0.45;
         carrier.state = 'stunned';
         carrier.stunTimer = 0.18;
@@ -767,21 +1265,23 @@ export class Game {
     }
 
     if (ball.acquisitionCooldown > 0) return;
-    if (ball.targetTeam === 'home' && ball.targetId !== null) {
-      const receiver = this.getPlayer('home', ball.targetId);
+    if (ball.targetTeam !== null && ball.targetId !== null) {
+      const receiverTeam = ball.targetTeam;
+      const receiver = this.getPlayer(receiverTeam, ball.targetId);
       if (receiver) {
         const dx = receiver.x - ball.x;
         const dy = receiver.y - ball.y;
         const receiverDistanceSquared = dx * dx + dy * dy;
         const receiveDistance = BALL_PICKUP_DISTANCE + 11;
+        const opponents = receiverTeam === 'home' ? this.awayTeam : this.homeTeam;
         let nearestOpponentDistanceSquared = Number.POSITIVE_INFINITY;
-        for (const opponent of this.awayTeam) {
+        for (const opponent of opponents) {
           const opponentDx = opponent.x - ball.x;
           const opponentDy = opponent.y - ball.y;
           const distanceSquared = opponentDx * opponentDx + opponentDy * opponentDy;
           if (distanceSquared < nearestOpponentDistanceSquared) nearestOpponentDistanceSquared = distanceSquared;
         }
-        // The pass target gets a small control cushion, but a defender closer to the ball can intercept.
+        // The target gets a small control cushion, but an opponent closer to the ball can intercept.
         if (receiverDistanceSquared <= receiveDistance * receiveDistance
           && receiverDistanceSquared <= nearestOpponentDistanceSquared + 100) {
           this.setPossession(receiver);
@@ -818,6 +1318,19 @@ export class Game {
     this.ball.vx = player.vx;
     this.ball.vy = player.vy;
     this.possession = player.team;
+    if (player.team === 'away') {
+      this.awayMode = 'attacking';
+      this.defensivePresserId = null;
+      this.presserCarrierId = null;
+      this.presserEngaged = false;
+      player.aiReactionTimer = this.profile().reactionDelay;
+      player.aiDecisionTimer = this.profile().reactionDelay;
+    } else {
+      this.awayMode = 'defending';
+      this.defensivePresserId = null;
+      this.presserCarrierId = null;
+      this.presserEngaged = false;
+    }
     player.state = 'receiving';
     player.stateTimer = 0.2;
     this.sfx?.('touch');
@@ -844,6 +1357,10 @@ export class Game {
     this.ball.vx *= 0.1;
     this.ball.vy *= 0.1;
     this.possession = 'neutral';
+    this.awayMode = 'defending';
+    this.defensivePresserId = null;
+    this.presserCarrierId = null;
+    this.presserEngaged = false;
     this.resetCharge();
     this.goalCelebrationTeam = scoringTeam;
     this.goalCelebrationTimer = 1.25;
@@ -867,7 +1384,7 @@ export class Game {
     ctx.save();
     ctx.translate(-this.camX, -this.camY);
     this.drawPitch(ctx);
-    for (const player of this.awayTeam) this.drawPlayer(ctx, player, false);
+    for (const player of this.awayTeam) this.drawPlayer(ctx, player, player.id === this.defensivePresserId);
     for (let i = 0; i < this.homeTeam.length; i++) this.drawPlayer(ctx, this.homeTeam[i], i === this.activePlayerIndex);
     this.drawGoalkeeper(ctx, this.awayKeeper);
     this.drawGoalkeeper(ctx, this.homeKeeper);
