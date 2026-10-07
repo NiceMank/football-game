@@ -1,7 +1,8 @@
 {
-  "name": "react-vite-tailwind",
+  "name": "efootball-striker",
+  "description": "Jeu de football d'arcade sur Canvas avec React 19 et Vite",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
