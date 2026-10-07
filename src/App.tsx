@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type TouchEvent } from 'react';
-import { Game, H, W, type Difficulty, type HudState, type Input, type Phase, type PlayerRole } from './game/engine';
+import { Game, H, MATCH_DURATION_SECONDS, W, type Difficulty, type HudState, type Input, type Phase, type PlayerRole } from './game/engine';
 import { playSfx, unlockAudio } from './game/sfx';
 
 interface JoystickTouch {
@@ -91,7 +91,7 @@ export default function App() {
     game.togglePause();
     if (game.phase === 'paused') clearInput();
     setPhase(game.phase);
-    if (!muted) playSfx('ui');
+    if (!muted) playSfx('pause');
   }, [clearInput, muted]);
 
   useEffect(() => {
@@ -115,6 +115,7 @@ export default function App() {
     let previousTime = performance.now();
     let accumulator = 0;
     let hudElapsed = 0;
+    let finishNotified = false;
 
     const frame = (now: number) => {
       let frameDt = Math.min((now - previousTime) / 1000, 0.1);
@@ -123,7 +124,13 @@ export default function App() {
       let steps = 0;
       while (accumulator >= FIXED_STEP && steps < 18) {
         game.update(FIXED_STEP, inputRef.current);
-        if (game.phase === 'playing') matchSecondsRef.current += FIXED_STEP;
+        matchSecondsRef.current = game.matchElapsedSeconds;
+        if (game.phase === 'playing') finishNotified = false;
+        if (game.phase === 'finished' && !finishNotified) {
+          finishNotified = true;
+          clearInput();
+          setPhase('finished');
+        }
         inputRef.current.actionPressed = false;
         inputRef.current.switchPlayer = false;
         accumulator -= FIXED_STEP;
@@ -141,7 +148,7 @@ export default function App() {
 
     animationFrame = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(animationFrame);
-  }, []);
+  }, [clearInput, game]);
 
   // Keyboard events feed movement plus a queued action edge; all gameplay stays in the engine.
   useEffect(() => {
@@ -152,9 +159,10 @@ export default function App() {
         if (game.phase === 'playing' || game.phase === 'paused') togglePause();
         return;
       }
-      if ((game.phase === 'start' || game.phase === 'paused') && (event.code === 'Enter' || event.code === 'Space')) {
-        if (game.phase === 'start') startGame();
-        else togglePause();
+      if ((game.phase === 'start' || game.phase === 'paused' || game.phase === 'finished')
+        && (event.code === 'Enter' || event.code === 'Space')) {
+        if (game.phase === 'paused') togglePause();
+        else startGame();
         return;
       }
       if (event.code === 'KeyR') { startGame(); return; }
@@ -454,13 +462,28 @@ export default function App() {
           {phase === 'paused' && (
             <Overlay>
               <section className="w-full max-w-xs space-y-5 text-center">
-                <div className="text-[10px] uppercase tracking-[0.4em] text-white/55">Match 5v5</div>
+                <div className="text-[10px] uppercase tracking-[0.4em] text-white/55">Match 5v5 · {formatMatchTime(matchSeconds)}</div>
                 <h2 className="text-5xl font-black italic">PAUSE</h2>
                 <div className="text-3xl font-black tabular-nums">{hud.homeScore} : {hud.awayScore}</div>
                 <div className="flex gap-2">
                   <button onClick={togglePause} className="flex-1 rounded-xl bg-amber-400 px-5 py-3 font-black text-slate-900">▶ Reprendre</button>
                   <button onClick={startGame} className="flex-1 rounded-xl border border-white/20 bg-white/10 px-5 py-3 font-black">↻ Recommencer</button>
                 </div>
+                <button onClick={() => setMuted(value => !value)} className="text-xs text-white/55 hover:text-white">
+                  {muted ? '🔇 Son coupé' : '🔊 Son activé'}
+                </button>
+              </section>
+            </Overlay>
+          )}
+
+          {phase === 'finished' && (
+            <Overlay>
+              <section className="w-full max-w-xs space-y-5 text-center">
+                <div className="text-[10px] font-black uppercase tracking-[0.35em] text-amber-200">Temps réglementaire · {formatMatchTime(MATCH_DURATION_SECONDS)}</div>
+                <h2 className="text-4xl font-black italic">FIN DU MATCH</h2>
+                <div className="text-sm font-black uppercase tracking-wider text-white/65">Score final</div>
+                <div className="text-5xl font-black tabular-nums">{hud.homeScore} : {hud.awayScore}</div>
+                <button onClick={startGame} className="min-h-12 w-full rounded-xl bg-amber-400 px-5 py-3 font-black text-slate-950">↻ Rejouer</button>
                 <button onClick={() => setMuted(value => !value)} className="text-xs text-white/55 hover:text-white">
                   {muted ? '🔇 Son coupé' : '🔊 Son activé'}
                 </button>

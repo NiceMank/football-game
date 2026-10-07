@@ -4,6 +4,7 @@ export const W = 480;
 export const H = 720;
 export const PITCH_W = 800;
 export const PITCH_H = 1200;
+export const MATCH_DURATION_SECONDS = 180;
 
 const FIELD_LEFT = 30;
 const FIELD_RIGHT = PITCH_W - FIELD_LEFT;
@@ -43,7 +44,7 @@ const PI2 = Math.PI * 2;
 
 export type TeamType = 'home' | 'away';
 export type TeamPossession = TeamType | 'neutral';
-export type Phase = 'start' | 'playing' | 'paused';
+export type Phase = 'start' | 'playing' | 'paused' | 'finished';
 export type PlayerRole = 'defender' | 'midfielder' | 'forward';
 export type PlayerState = 'idle' | 'running' | 'receiving' | 'passing' | 'shooting' | 'tackling' | 'stunned';
 export type Difficulty = 'amateur' | 'pro' | 'legend';
@@ -82,6 +83,11 @@ export interface FootballPlayer {
   tackleCooldown: number;
   stunTimer: number;
   stamina: number;
+  /** Visual-only timers and cached support targets; no influence on player physics. */
+  dustTimer: number;
+  supportDecisionTimer: number;
+  supportTargetX: number;
+  supportTargetY: number;
 }
 
 export type GoalkeeperState = 'idle' | 'positioning' | 'diving' | 'holding' | 'recovering';
@@ -123,6 +129,12 @@ export interface FootballBall {
   shotAttempted: boolean;
   /** Ball is held by a keeper without pretending it is owned by an outfield player. */
   keeperOwner: TeamType | null;
+  /** Presentation-only roll, bounce and trail state; ground-plane physics stays unchanged. */
+  rotation: number;
+  visualHeight: number;
+  visualHeightVelocity: number;
+  trailTimer: number;
+  bouncePulse: number;
 }
 
 export interface HudState {
@@ -171,6 +183,27 @@ interface PassOption {
   distance: number;
 }
 
+type EffectKind = 'dust' | 'trail' | 'spark' | 'confetti' | 'text';
+
+interface VisualEffect {
+  active: boolean;
+  kind: EffectKind;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+  size: number;
+  rotation: number;
+  spin: number;
+  color: number;
+  textCode: number;
+}
+
+const EFFECT_CAPACITY = 88;
+const EFFECT_COLORS = ['#f8fafc', '#fde68a', '#38bdf8', '#fb7185', '#b7d985'] as const;
+const FLOATING_LABELS = ['', 'PUISSANT !', 'TIR PARFAIT !', 'BUT !', 'COUP D’ENVOI', 'ARRÊT !'] as const;
 const TACKLE_MIN_DISTANCE = 12;
 const TACKLE_MAX_DISTANCE = PLAYER_COLLISION_DISTANCE + 8;
 const TACKLE_REACTION_DISTANCE = 104;
@@ -239,6 +272,10 @@ function createPlayer(id: number, team: TeamType, slot: FormationSlot): Football
     tackleCooldown: 0,
     stunTimer: 0,
     stamina: 100,
+    dustTimer: 0,
+    supportDecisionTimer: 0,
+    supportTargetX: slot.x,
+    supportTargetY: slot.y,
   };
 }
 
@@ -297,6 +334,11 @@ export class Game {
     shotPower: 0,
     shotAttempted: false,
     keeperOwner: null,
+    rotation: 0,
+    visualHeight: 0,
+    visualHeightVelocity: 0,
+    trailTimer: 0,
+    bouncePulse: 0,
   };
 
   camX = CENTER_X - W / 2;
@@ -308,6 +350,21 @@ export class Game {
   perfectShot = false;
   goalCelebrationTeam: TeamType | null = null;
   goalCelebrationTimer = 0;
+  matchElapsedSeconds = 0;
+  private simulationTime = 0;
+  private goalFlashTimer = 0;
+  private kickoffTimer = 0;
+  private cameraShake = 0;
+  private cameraShakeX = 0;
+  private cameraShakeY = 0;
+  private readonly effects: VisualEffect[] = Array.from({ length: EFFECT_CAPACITY }, (): VisualEffect => ({
+    active: false, kind: 'dust', x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0,
+    size: 0, rotation: 0, spin: 0, color: 0, textCode: 0,
+  }));
+  private effectCursor = 0;
+  private visualRandomState = 0x35a17e29;
+  private homeSupportMode: 'attack' | 'defense' | 'loose' = 'loose';
+  private lastSupportActiveId: number | null = null;
   private actionWasDown = false;
   private manualHomeSelection = false;
   private kickoffTeam: TeamType = 'home';
@@ -326,9 +383,20 @@ export class Game {
     this.phase = 'playing';
     this.homeScore = 0;
     this.awayScore = 0;
+    this.matchElapsedSeconds = 0;
+    this.simulationTime = 0;
     this.goalResetTimer = 0;
     this.goalCelebrationTimer = 0;
     this.goalCelebrationTeam = null;
+    this.goalFlashTimer = 0;
+    this.kickoffTimer = 0;
+    this.cameraShake = 0;
+    this.cameraShakeX = 0;
+    this.cameraShakeY = 0;
+    this.effectCursor = 0;
+    for (let i = 0; i < this.effects.length; i++) this.effects[i].active = false;
+    this.homeSupportMode = 'loose';
+    this.lastSupportActiveId = null;
     this.resetCharge();
     this.actionWasDown = false;
     this.awayMode = 'defending';
@@ -336,6 +404,7 @@ export class Game {
     this.presserCarrierId = null;
     this.presserEngaged = false;
     this.randomState = 0x6d2b79f5;
+    this.visualRandomState = 0x35a17e29;
     this.createTeams();
     this.resetForKickoff('home');
   }
@@ -343,6 +412,16 @@ export class Game {
   togglePause() {
     if (this.phase === 'playing') this.phase = 'paused';
     else if (this.phase === 'paused') this.phase = 'playing';
+  }
+
+  private finishMatch() {
+    if (this.phase !== 'playing') return;
+    this.phase = 'finished';
+    this.matchElapsedSeconds = MATCH_DURATION_SECONDS;
+    this.resetCharge();
+    this.actionWasDown = false;
+    this.goalResetTimer = 0;
+    this.sfx?.('whistle');
   }
 
   setDifficulty(difficulty: Difficulty) {
@@ -385,6 +464,11 @@ export class Game {
 
     const step = Math.min(Math.max(dt, 0), 0.05);
     this.updateTimers(step);
+    this.simulationTime += step;
+    this.updateVisualEffects(step);
+    this.kickoffTimer = Math.max(0, this.kickoffTimer - step);
+    this.goalFlashTimer = Math.max(0, this.goalFlashTimer - step);
+
     if (this.goalResetTimer > 0) {
       this.goalResetTimer = Math.max(0, this.goalResetTimer - step);
       if (this.goalResetTimer === 0) this.resetForKickoff(this.kickoffTeam);
@@ -403,7 +487,13 @@ export class Game {
     this.resolveGoalkeeperBallCollision();
     this.resolvePlayerBallCollision();
     this.checkGoal();
+    this.emitRunDust(step);
     this.updateActivePlayer();
+
+    if (this.goalResetTimer === 0) {
+      this.matchElapsedSeconds = Math.min(MATCH_DURATION_SECONDS, this.matchElapsedSeconds + step);
+      if (this.matchElapsedSeconds >= MATCH_DURATION_SECONDS) this.finishMatch();
+    }
     this.updateCamera(step);
   }
 
@@ -448,6 +538,11 @@ export class Game {
     this.ball.shotPower = 0;
     this.ball.shotAttempted = false;
     this.ball.keeperOwner = null;
+    this.ball.rotation = 0;
+    this.ball.visualHeight = 0;
+    this.ball.visualHeightVelocity = 0;
+    this.ball.trailTimer = 0;
+    this.ball.bouncePulse = 0;
     this.possession = kickingTeam;
     this.awayMode = kickingTeam === 'away' ? 'attacking' : 'defending';
     this.defensivePresserId = null;
@@ -462,9 +557,14 @@ export class Game {
     this.manualHomeSelection = false;
     this.goalCelebrationTimer = 0;
     this.goalCelebrationTeam = null;
+    this.kickoffTimer = this.phase === 'playing' ? 0.72 : 0;
+    if (this.phase === 'playing') this.spawnFloatingText(CENTER_X, CENTER_Y - 48, 4, 1);
+    this.homeSupportMode = 'loose';
+    this.lastSupportActiveId = null;
     this.kickoffTeam = kickingTeam;
     this.activePlayerIndex = kickingTeam === 'home' ? this.homeTeam.indexOf(kicker) : this.findNearestHomePlayerIndex();
     this.attachBallToOwner();
+    if (this.phase === 'playing') this.sfx?.('kickoff');
   }
 
   private resetPlayer(player: FootballPlayer, slot: FormationSlot) {
@@ -481,8 +581,179 @@ export class Game {
     player.tackleCooldown = 0;
     player.stunTimer = 0;
     player.stamina = 100;
+    player.dustTimer = 0;
+    player.supportDecisionTimer = 0;
+    player.supportTargetX = slot.x;
+    player.supportTargetY = slot.y;
     player.formationX = slot.x;
     player.formationY = slot.y;
+  }
+
+  private visualRandom01() {
+    let value = this.visualRandomState | 0;
+    value ^= value << 13;
+    value ^= value >>> 17;
+    value ^= value << 5;
+    this.visualRandomState = value >>> 0;
+    return this.visualRandomState / 0x100000000;
+  }
+
+  private spawnEffect(
+    kind: EffectKind,
+    x: number,
+    y: number,
+    vx: number,
+    vy: number,
+    life: number,
+    size: number,
+    color: number,
+    textCode = 0,
+    spin = 0,
+  ) {
+    const effect = this.effects[this.effectCursor];
+    this.effectCursor = (this.effectCursor + 1) % this.effects.length;
+    effect.active = true;
+    effect.kind = kind;
+    effect.x = x;
+    effect.y = y;
+    effect.vx = vx;
+    effect.vy = vy;
+    effect.life = life;
+    effect.maxLife = life;
+    effect.size = size;
+    effect.rotation = this.visualRandom01() * PI2;
+    effect.spin = spin;
+    effect.color = color;
+    effect.textCode = textCode;
+  }
+
+  private spawnBurst(x: number, y: number, count: number, kind: EffectKind, color: number, speed: number, life: number, size: number) {
+    for (let i = 0; i < count; i++) {
+      const angle = PI2 * i / count + (this.visualRandom01() - 0.5) * 0.32;
+      const particleSpeed = speed * (0.65 + this.visualRandom01() * 0.7);
+      this.spawnEffect(
+        kind,
+        x,
+        y,
+        Math.cos(angle) * particleSpeed,
+        Math.sin(angle) * particleSpeed,
+        life * (0.75 + this.visualRandom01() * 0.5),
+        size * (0.75 + this.visualRandom01() * 0.6),
+        color,
+        0,
+        (this.visualRandom01() - 0.5) * 12,
+      );
+    }
+  }
+
+  private spawnFloatingText(x: number, y: number, textCode: number, color: number) {
+    this.spawnEffect('text', x, y, 0, -28, 0.78, 13, color, textCode);
+  }
+
+  private triggerCameraShake(amount: number) {
+    this.cameraShake = Math.max(this.cameraShake, Math.min(6, amount));
+  }
+
+  private updateVisualEffects(dt: number) {
+    this.cameraShake *= Math.exp(-12 * dt);
+    if (this.cameraShake < 0.03) this.cameraShake = 0;
+    this.cameraShakeX = Math.sin(this.simulationTime * 49) * this.cameraShake;
+    this.cameraShakeY = Math.sin(this.simulationTime * 37 + 0.8) * this.cameraShake * 0.62;
+
+    for (let i = 0; i < this.effects.length; i++) {
+      const effect = this.effects[i];
+      if (!effect.active) continue;
+      effect.life -= dt;
+      if (effect.life <= 0) {
+        effect.active = false;
+        continue;
+      }
+      effect.x += effect.vx * dt;
+      effect.y += effect.vy * dt;
+      effect.rotation += effect.spin * dt;
+      if (effect.kind === 'text') continue;
+      const drag = effect.kind === 'trail' ? 8 : effect.kind === 'dust' ? 3.5 : 1.8;
+      const gravity = effect.kind === 'dust' ? -12 : effect.kind === 'trail' ? 0 : 190;
+      const velocityDrag = Math.exp(-drag * dt);
+      effect.vx *= velocityDrag;
+      effect.vy = effect.vy * velocityDrag + gravity * dt;
+    }
+  }
+
+  private emitRunDust(dt: number) {
+    for (let teamIndex = 0; teamIndex < 2; teamIndex++) {
+      const team = teamIndex === 0 ? this.homeTeam : this.awayTeam;
+      const color = 4;
+      for (let i = 0; i < team.length; i++) {
+        const player = team[i];
+        const speedSquared = player.vx * player.vx + player.vy * player.vy;
+        if (player.state !== 'running' || speedSquared < 10500) {
+          player.dustTimer = Math.min(player.dustTimer, 0.035);
+          continue;
+        }
+        player.dustTimer -= dt;
+        if (player.dustTimer > 0) continue;
+        player.dustTimer += 0.13;
+        const rearX = player.x - Math.cos(player.angle) * 9;
+        const rearY = player.y - Math.sin(player.angle) * 9;
+        this.spawnEffect('dust', rearX, rearY, -player.vx * 0.06, -player.vy * 0.06 - 8, 0.24, 3.5, color, 0, 2);
+      }
+    }
+  }
+
+  private setBallKickVisual(liftVelocity: number) {
+    this.ball.visualHeight = 0;
+    this.ball.visualHeightVelocity = liftVelocity;
+    this.ball.trailTimer = 0;
+    this.ball.bouncePulse = 0;
+  }
+
+  private updateBallVisual(dt: number) {
+    const ball = this.ball;
+    const speed = Math.hypot(ball.vx, ball.vy);
+    ball.rotation = (ball.rotation + speed * dt / BALL_RADIUS) % PI2;
+    ball.bouncePulse = Math.max(0, ball.bouncePulse - dt * 4.5);
+    if (ball.keeperOwner !== null || ball.owner !== 'none') {
+      ball.visualHeight = 0;
+      ball.visualHeightVelocity = 0;
+      return;
+    }
+    ball.visualHeight += ball.visualHeightVelocity * dt;
+    ball.visualHeightVelocity -= 470 * dt;
+    if (ball.visualHeight <= 0) {
+      if (ball.visualHeightVelocity < -42) {
+        ball.bouncePulse = Math.min(1, Math.abs(ball.visualHeightVelocity) / 180);
+        ball.visualHeightVelocity = -ball.visualHeightVelocity * 0.28;
+        ball.visualHeight = 0;
+        if (ball.visualHeightVelocity < 24) ball.visualHeightVelocity = 0;
+      } else {
+        ball.visualHeight = 0;
+        ball.visualHeightVelocity = 0;
+      }
+    }
+  }
+
+  private updateBallTrail(dt: number) {
+    const ball = this.ball;
+    const speed = Math.hypot(ball.vx, ball.vy);
+    if (ball.shotTeam === null || ball.shotPower < 0.72 || speed < 590) {
+      ball.trailTimer = 0;
+      return;
+    }
+    ball.trailTimer -= dt;
+    if (ball.trailTimer > 0) return;
+    ball.trailTimer += 0.034;
+    const inverseSpeed = 1 / Math.max(1, speed);
+    this.spawnEffect(
+      'trail',
+      ball.x - ball.vx * inverseSpeed * 7,
+      ball.y - ball.vy * inverseSpeed * 7 - ball.visualHeight,
+      -ball.vx * 0.015,
+      -ball.vy * 0.015,
+      0.15,
+      3 + ball.shotPower * 1.8,
+      1,
+    );
   }
 
   private updateTimers(dt: number) {
@@ -502,6 +773,7 @@ export class Game {
     player.stateTimer = Math.max(0, player.stateTimer - dt);
     player.aiDecisionTimer = Math.max(0, player.aiDecisionTimer - dt);
     player.aiReactionTimer = Math.max(0, player.aiReactionTimer - dt);
+    player.supportDecisionTimer = Math.max(0, player.supportDecisionTimer - dt);
     player.tackleCooldown = Math.max(0, player.tackleCooldown - dt);
     player.stunTimer = Math.max(0, player.stunTimer - dt);
     if (player.stunTimer === 0 && player.state === 'stunned') player.state = 'idle';
@@ -536,7 +808,10 @@ export class Game {
     }
 
     if (bestIndex !== -1) {
-      this.activePlayerIndex = bestIndex;
+      if (bestIndex !== this.activePlayerIndex) {
+        this.activePlayerIndex = bestIndex;
+        this.sfx?.('switch');
+      }
       this.manualHomeSelection = true;
     }
   }
@@ -768,13 +1043,15 @@ export class Game {
     ball.ownerLockTimer = 0;
     ball.targetTeam = 'home';
     ball.targetId = receiver.id;
+    this.setBallKickVisual(36);
+    this.spawnBurst(ball.x, ball.y, 3, 'spark', 0, 34, 0.14, 1.4);
     this.possession = 'home';
     this.activePlayerIndex = this.homeTeam.indexOf(receiver);
     sender.state = 'passing';
     sender.stateTimer = 0.24;
     receiver.state = 'receiving';
     receiver.stateTimer = 0.35;
-    this.sfx?.('kick');
+    this.sfx?.('pass');
   }
 
   private executeShot(shooter: FootballPlayer, power: number, perfect: boolean, aimX: number, aimY: number) {
@@ -807,10 +1084,19 @@ export class Game {
     ball.ownerLockTimer = 0;
     ball.targetTeam = null;
     ball.targetId = null;
+    this.setBallKickVisual(60 + shotPower * 105);
+    if (shotPower >= 0.72 || perfect) {
+      this.spawnBurst(ball.x, ball.y, 7, 'spark', 1, 100, 0.22, 2.2);
+      this.spawnFloatingText(ball.x, ball.y - 18, perfect ? 2 : 1, 1);
+      this.triggerCameraShake(perfect ? 2.4 : 1.8);
+    } else {
+      this.spawnBurst(ball.x, ball.y, 3, 'spark', 0, 48, 0.14, 1.5);
+      this.triggerCameraShake(0.7);
+    }
     this.possession = 'neutral';
     shooter.state = 'shooting';
     shooter.stateTimer = 0.32;
-    this.sfx?.(perfect ? 'power' : 'kick');
+    this.sfx?.(perfect || shotPower >= 0.72 ? 'power' : 'shot');
   }
 
   /** Home teammates seek role-appropriate support positions instead of snapping back to slots. */
@@ -858,6 +1144,14 @@ export class Game {
     anchorX = clamp(anchorX, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
     anchorY = clamp(anchorY, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
 
+    const supportMode = homeAttack ? 'attack' : opponentInControl ? 'defense' : 'loose';
+    const activeId = active?.id ?? null;
+    if (supportMode !== this.homeSupportMode || activeId !== this.lastSupportActiveId) {
+      this.homeSupportMode = supportMode;
+      this.lastSupportActiveId = activeId;
+      for (const player of this.homeTeam) player.supportDecisionTimer = 0;
+    }
+
     for (let i = 0; i < this.homeTeam.length; i++) {
       if (i === this.activePlayerIndex) continue;
       const player = this.homeTeam[i];
@@ -871,44 +1165,53 @@ export class Game {
         // Keep the passer's momentum and let them follow their pass for a brief beat.
         targetX = player.x + player.vx * 0.32;
         targetY = player.y + player.vy * 0.32 - 22;
-      } else if (homeAttack) {
-        if (player.role === 'forward') {
-          const progress = clamp((FIELD_BOTTOM - anchorY) / (FIELD_BOTTOM - FIELD_TOP), 0, 1);
-          const runDepth = clamp(205 - progress * 45, 150, 205);
-          targetY = clamp(anchorY - runDepth, FIELD_TOP + 82, FIELD_BOTTOM - PLAYER_RADIUS);
-          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 152);
-        } else if (player.role === 'midfielder') {
-          targetY = clamp(anchorY + 58, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
-          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 108);
+        player.supportDecisionTimer = 0;
+      } else if (player.supportDecisionTimer <= 0) {
+        if (homeAttack) {
+          if (player.role === 'forward') {
+            const progress = clamp((FIELD_BOTTOM - anchorY) / (FIELD_BOTTOM - FIELD_TOP), 0, 1);
+            const runDepth = clamp(205 - progress * 45, 150, 205);
+            targetY = clamp(anchorY - runDepth, FIELD_TOP + 82, FIELD_BOTTOM - PLAYER_RADIUS);
+            targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 152);
+          } else if (player.role === 'midfielder') {
+            targetY = clamp(anchorY + 58, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+            targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 108);
+          } else {
+            const behindDistance = anchorY > 760 ? 142 : 212;
+            targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.18, -58, 58);
+            targetY = clamp(Math.max(CENTER_Y + 108, anchorY + behindDistance), CENTER_Y + 108, FIELD_BOTTOM - 22);
+          }
+        } else if (opponentInControl) {
+          if (player.role === 'forward') {
+            const activeShade = active ? clamp((active.x - anchorX) * 0.14, -32, 32) : 0;
+            targetX = player.formationX + (anchorX - player.formationX) * 0.38 + activeShade;
+            targetY = clamp(anchorY - 72, FIELD_TOP + 60, FIELD_BOTTOM - PLAYER_RADIUS);
+          } else if (player.role === 'midfielder') {
+            targetY = clamp(anchorY + 122, CENTER_Y + 42, FIELD_BOTTOM - 84);
+            targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 104);
+          } else {
+            targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.14, -46, 46);
+            targetY = clamp(Math.max(CENTER_Y + 104, anchorY + 188), CENTER_Y + 104, FIELD_BOTTOM - 20);
+          }
         } else {
-          const behindDistance = anchorY > 760 ? 142 : 212;
-          targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.18, -58, 58);
-          targetY = clamp(Math.max(CENTER_Y + 108, anchorY + behindDistance), CENTER_Y + 108, FIELD_BOTTOM - 22);
+          // Loose balls invite support; defenders still hold a line behind the action.
+          if (player.role === 'forward') {
+            targetY = clamp(anchorY - 96, FIELD_TOP + 82, FIELD_BOTTOM - PLAYER_RADIUS);
+            targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 132);
+          } else if (player.role === 'midfielder') {
+            targetY = clamp(anchorY + 44, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
+            targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 98);
+          } else {
+            targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.13, -42, 42);
+            targetY = clamp(Math.max(CENTER_Y + 104, anchorY + 190), CENTER_Y + 104, FIELD_BOTTOM - 20);
+          }
         }
-      } else if (opponentInControl) {
-        if (player.role === 'forward') {
-          const activeShade = active ? clamp((active.x - anchorX) * 0.14, -32, 32) : 0;
-          targetX = player.formationX + (anchorX - player.formationX) * 0.38 + activeShade;
-          targetY = clamp(anchorY - 72, FIELD_TOP + 60, FIELD_BOTTOM - PLAYER_RADIUS);
-        } else if (player.role === 'midfielder') {
-          targetY = clamp(anchorY + 122, CENTER_Y + 42, FIELD_BOTTOM - 84);
-          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 104);
-        } else {
-          targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.14, -46, 46);
-          targetY = clamp(Math.max(CENTER_Y + 104, anchorY + 188), CENTER_Y + 104, FIELD_BOTTOM - 20);
-        }
+        player.supportTargetX = targetX;
+        player.supportTargetY = targetY;
+        player.supportDecisionTimer = 0.14;
       } else {
-        // Loose balls invite support; defenders still hold a line behind the action.
-        if (player.role === 'forward') {
-          targetY = clamp(anchorY - 96, FIELD_TOP + 82, FIELD_BOTTOM - PLAYER_RADIUS);
-          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 132);
-        } else if (player.role === 'midfielder') {
-          targetY = clamp(anchorY + 44, FIELD_TOP + PLAYER_RADIUS, FIELD_BOTTOM - PLAYER_RADIUS);
-          targetX = this.chooseHomeSupportLane(player, active, anchorX, anchorY, targetY, 98);
-        } else {
-          targetX = player.formationX + clamp((anchorX - CENTER_X) * 0.13, -42, 42);
-          targetY = clamp(Math.max(CENTER_Y + 104, anchorY + 190), CENTER_Y + 104, FIELD_BOTTOM - 20);
-        }
+        targetX = player.supportTargetX;
+        targetY = player.supportTargetY;
       }
 
       targetX = clamp(targetX, FIELD_LEFT + PLAYER_RADIUS, FIELD_RIGHT - PLAYER_RADIUS);
@@ -1314,7 +1617,9 @@ export class Game {
     passer.aiDecisionTimer = profile.decisionInterval;
     receiver.state = 'receiving';
     receiver.stateTimer = 0.35;
-    this.sfx?.('kick');
+    this.setBallKickVisual(34);
+    this.spawnBurst(ball.x, ball.y, 3, 'spark', 0, 34, 0.14, 1.4);
+    this.sfx?.('pass');
   }
 
   private executeAwayShot(shooter: FootballPlayer, profile: AIDifficultyProfile) {
@@ -1346,7 +1651,15 @@ export class Game {
     shooter.state = 'shooting';
     shooter.stateTimer = 0.3;
     shooter.aiDecisionTimer = profile.decisionInterval;
-    this.sfx?.('kick');
+    this.setBallKickVisual(60 + power * 100);
+    if (power >= 0.72) {
+      this.spawnBurst(ball.x, ball.y, 6, 'spark', 1, 92, 0.2, 2);
+      this.spawnFloatingText(ball.x, ball.y - 18, 1, 1);
+      this.triggerCameraShake(1.7);
+    } else {
+      this.spawnBurst(ball.x, ball.y, 3, 'spark', 0, 42, 0.14, 1.5);
+    }
+    this.sfx?.(power >= 0.72 ? 'power' : 'shot');
   }
 
   private nearestHomeDistance(x: number, y: number) {
@@ -1615,6 +1928,9 @@ export class Game {
     keeper.state = 'diving';
     keeper.stateTimer = GK_DIVE_DURATION;
     ball.shotAttempted = true;
+    this.spawnBurst(keeper.x, keeper.y, 5, 'dust', 4, 58, 0.26, 3);
+    this.triggerCameraShake(0.65);
+    this.sfx?.('dive');
   }
 
   /** Intercepts a shot/pass at the keeper's real position; catches hold, parries rebound. */
@@ -1664,6 +1980,9 @@ export class Game {
     ball.acquisitionCooldown = 0;
     ball.vx = 0;
     ball.vy = 0;
+    ball.visualHeight = 0;
+    ball.visualHeightVelocity = 0;
+    ball.trailTimer = 0;
     this.possession = keeper.team;
     keeper.vx = 0;
     keeper.vy = 0;
@@ -1671,7 +1990,10 @@ export class Game {
     keeper.state = 'holding';
     keeper.stateTimer = GK_HOLD_DURATION;
     keeper.diveCanCatch = false;
-    this.sfx?.('touch');
+    this.spawnBurst(keeper.x, keeper.y, 6, 'spark', keeper.team === 'home' ? 2 : 3, 46, 0.22, 1.8);
+    this.spawnFloatingText(keeper.x, keeper.y - 18, 5, 0);
+    this.triggerCameraShake(0.85);
+    this.sfx?.('catch');
   }
 
   private parryBallWithKeeper(keeper: Goalkeeper, offsetX: number, offsetY: number, distanceSquared: number, incomingSpeed: number) {
@@ -1708,7 +2030,11 @@ export class Game {
     keeper.state = 'recovering';
     keeper.stateTimer = GK_RECOVERY_DURATION;
     keeper.diveCanCatch = false;
-    this.sfx?.('touch');
+    this.setBallKickVisual(42);
+    this.spawnBurst(ball.x, ball.y - 4, 8, 'spark', 0, 78, 0.25, 2.1);
+    this.spawnFloatingText(keeper.x, keeper.y - 18, 5, 0);
+    this.triggerCameraShake(1.35);
+    this.sfx?.('parry');
   }
 
   /** Throws a held ball to a viable defender, or clears toward the least-pressured zone. */
@@ -1801,26 +2127,29 @@ export class Game {
     keeper.state = 'recovering';
     keeper.stateTimer = GK_RECOVERY_DURATION;
     keeper.diveCanCatch = false;
-    this.sfx?.('kick');
+    this.setBallKickVisual(64);
+    this.spawnBurst(ball.x, ball.y, 4, 'spark', 0, 42, 0.16, 1.5);
+    this.sfx?.('pass');
   }
 
   /** Updates either the controlled dribble or the free ball's dt-based motion. */
   private updateBall(dt: number) {
-    if (this.ball.keeperOwner !== null) {
-      const keeper = this.ball.keeperOwner === 'home' ? this.homeKeeper : this.awayKeeper;
+    const ball = this.ball;
+    this.updateBallVisual(dt);
+    if (ball.keeperOwner !== null) {
+      const keeper = ball.keeperOwner === 'home' ? this.homeKeeper : this.awayKeeper;
       const fieldDirection = keeper.team === 'home' ? -1 : 1;
-      this.ball.x = keeper.x + Math.cos(keeper.angle) * BALL_OFFSET * 0.65;
-      this.ball.y = keeper.y + fieldDirection * BALL_OFFSET * 0.65;
-      this.ball.vx = 0;
-      this.ball.vy = 0;
+      ball.x = keeper.x + Math.cos(keeper.angle) * BALL_OFFSET * 0.65;
+      ball.y = keeper.y + fieldDirection * BALL_OFFSET * 0.65;
+      ball.vx = 0;
+      ball.vy = 0;
       return;
     }
-    if (this.ball.owner !== 'none') {
+    if (ball.owner !== 'none') {
       this.attachBallToOwner(dt);
       return;
     }
 
-    const ball = this.ball;
     ball.x += ball.vx * dt;
     ball.y += ball.vy * dt;
     const friction = Math.pow(ball.friction, dt);
@@ -1829,18 +2158,39 @@ export class Game {
 
     const minX = FIELD_LEFT + BALL_RADIUS;
     const maxX = FIELD_RIGHT - BALL_RADIUS;
-    if (ball.x < minX) { ball.x = minX; ball.vx = Math.abs(ball.vx) * 0.7; }
-    if (ball.x > maxX) { ball.x = maxX; ball.vx = -Math.abs(ball.vx) * 0.7; }
+    if (ball.x < minX) { ball.x = minX; ball.vx = Math.abs(ball.vx) * 0.7; ball.bouncePulse = 0.45; }
+    if (ball.x > maxX) { ball.x = maxX; ball.vx = -Math.abs(ball.vx) * 0.7; ball.bouncePulse = 0.45; }
 
     const insideGoalMouth = ball.x > CENTER_X - GOAL_WIDTH / 2 + BALL_RADIUS
       && ball.x < CENTER_X + GOAL_WIDTH / 2 - BALL_RADIUS;
     if (!insideGoalMouth && ball.y < FIELD_TOP + BALL_RADIUS) {
       ball.y = FIELD_TOP + BALL_RADIUS;
       ball.vy = Math.abs(ball.vy) * 0.7;
+      ball.bouncePulse = 0.5;
+      this.playPostEffect(ball, FIELD_TOP);
     } else if (!insideGoalMouth && ball.y > FIELD_BOTTOM - BALL_RADIUS) {
       ball.y = FIELD_BOTTOM - BALL_RADIUS;
       ball.vy = -Math.abs(ball.vy) * 0.7;
+      ball.bouncePulse = 0.5;
+      this.playPostEffect(ball, FIELD_BOTTOM);
     }
+    this.updateBallTrail(dt);
+  }
+
+  private playPostEffect(ball: FootballBall, goalY: number) {
+    if (ball.shotTeam === null) return;
+    const leftPostX = CENTER_X - GOAL_WIDTH / 2;
+    const rightPostX = CENTER_X + GOAL_WIDTH / 2;
+    const hitLeft = Math.abs(ball.x - leftPostX) <= BALL_RADIUS + 7;
+    const hitRight = Math.abs(ball.x - rightPostX) <= BALL_RADIUS + 7;
+    if (!hitLeft && !hitRight) return;
+    const postX = hitLeft ? leftPostX : rightPostX;
+    ball.shotTeam = null;
+    ball.shotAttempted = false;
+    ball.visualHeightVelocity = Math.max(ball.visualHeightVelocity, 36);
+    this.spawnBurst(postX, goalY, 6, 'spark', 0, 72, 0.22, 2.2);
+    this.triggerCameraShake(1.65);
+    this.sfx?.('post');
   }
 
   private attachBallToOwner(dt = 0) {
@@ -1907,6 +2257,8 @@ export class Game {
             challenger.state = 'tackling';
             challenger.stateTimer = 0.22;
             this.presserEngaged = true;
+            this.spawnBurst(challenger.x, challenger.y, 3, 'dust', 4, 46, 0.22, 2.5);
+            this.triggerCameraShake(0.45);
             this.sfx?.('tackle');
             return;
           }
@@ -1947,6 +2299,9 @@ export class Game {
         carrier.state = 'stunned';
         carrier.stunTimer = 0.18;
         carrier.stateTimer = 0.18;
+        this.setBallKickVisual(18);
+        this.spawnBurst(ball.x, ball.y, 6, 'dust', 4, 72, 0.28, 3);
+        this.triggerCameraShake(0.85);
         this.sfx?.('tackle');
         return;
       }
@@ -2006,6 +2361,9 @@ export class Game {
     this.ball.shotPower = 0;
     this.ball.shotAttempted = false;
     this.ball.keeperOwner = null;
+    this.ball.visualHeight = 0;
+    this.ball.visualHeightVelocity = 0;
+    this.ball.trailTimer = 0;
     this.ball.ownerLockTimer = OWNER_LOCK_DURATION;
     this.ball.acquisitionCooldown = 0;
     this.ball.vx = player.vx;
@@ -2026,7 +2384,8 @@ export class Game {
     }
     player.state = 'receiving';
     player.stateTimer = 0.2;
-    this.sfx?.('touch');
+    this.spawnBurst(player.x, player.y, 3, 'spark', player.team === 'home' ? 2 : 3, 34, 0.16, 1.5);
+    this.sfx?.('recovery');
     this.attachBallToOwner();
   }
 
@@ -2062,16 +2421,44 @@ export class Game {
     this.goalCelebrationTeam = scoringTeam;
     this.goalCelebrationTimer = 1.25;
     this.goalResetTimer = 1.25;
+    this.goalFlashTimer = 0.24;
+    this.kickoffTimer = 0;
+    const goalY = scoringTeam === 'home' ? FIELD_TOP : FIELD_BOTTOM;
+    const goalColor = scoringTeam === 'home' ? 1 : 3;
+    this.spawnBurst(CENTER_X, goalY, 12, 'confetti', goalColor, 118, 0.78, 4.2);
+    this.spawnBurst(CENTER_X, goalY, 9, 'confetti', 0, 92, 0.68, 3.4);
+    this.spawnFloatingText(CENTER_X, goalY - (scoringTeam === 'home' ? 10 : -10), 3, goalColor);
+    this.triggerCameraShake(4.8);
     this.sfx?.('goal');
   }
 
-  /** Camera follows the ball/holder and is clamped to the world bounds. */
+  /** Softly follows play with a small player bias and bounded velocity look-ahead. */
   private updateCamera(dt: number) {
-    const targetX = this.ball.x;
-    const targetY = this.ball.y;
+    const ball = this.ball;
+    const active = this.homeTeam[this.activePlayerIndex] ?? null;
+    let targetX = ball.x;
+    let targetY = ball.y;
+    let playerWeight = 0;
+
+    if (ball.owner === 'home') {
+      playerWeight = 0.24;
+    } else if (active) {
+      playerWeight = ball.owner === 'away' || ball.keeperOwner === 'away' ? 0.09 : 0.14;
+    }
+    if (playerWeight > 0 && active) {
+      targetX = targetX * (1 - playerWeight) + active.x * playerWeight;
+      targetY = targetY * (1 - playerWeight) + active.y * playerWeight;
+    } else if (ball.keeperOwner !== null) {
+      const keeper = ball.keeperOwner === 'home' ? this.homeKeeper : this.awayKeeper;
+      targetX = keeper.x;
+      targetY = keeper.y;
+    }
+
+    targetX += clamp(ball.vx * 0.12, -72, 72);
+    targetY += clamp(ball.vy * 0.12, -92, 92);
     const desiredX = clamp(targetX - W / 2, 0, PITCH_W - W);
     const desiredY = clamp(targetY - H / 2, 0, PITCH_H - H);
-    const blend = 1 - Math.exp(-5.5 * Math.max(0, dt));
+    const blend = 1 - Math.exp(-4.8 * Math.max(0, dt));
     this.camX = clamp(this.camX + (desiredX - this.camX) * blend, 0, PITCH_W - W);
     this.camY = clamp(this.camY + (desiredY - this.camY) * blend, 0, PITCH_H - H);
   }
@@ -2079,15 +2466,18 @@ export class Game {
   // ------------------------- World rendering -------------------------
   render(ctx: CanvasRenderingContext2D) {
     ctx.save();
-    ctx.translate(-this.camX, -this.camY);
+    ctx.translate(-this.camX + this.cameraShakeX, -this.camY + this.cameraShakeY);
     this.drawPitch(ctx);
     for (const player of this.awayTeam) this.drawPlayer(ctx, player, player.id === this.defensivePresserId);
     for (let i = 0; i < this.homeTeam.length; i++) this.drawPlayer(ctx, this.homeTeam[i], i === this.activePlayerIndex);
     this.drawGoalkeeper(ctx, this.awayKeeper);
     this.drawGoalkeeper(ctx, this.homeKeeper);
     this.drawBall(ctx);
+    this.drawEffects(ctx);
+    this.drawKickoffPulse(ctx);
     this.drawGoalCelebration(ctx);
     ctx.restore();
+    this.drawScreenFlash(ctx);
   }
 
   private drawPitch(ctx: CanvasRenderingContext2D) {
@@ -2174,8 +2564,21 @@ export class Game {
   private drawPlayer(ctx: CanvasRenderingContext2D, player: FootballPlayer, active: boolean) {
     const shirt = player.team === 'home' ? '#38bdf8' : '#ef4444';
     const trim = player.team === 'home' ? '#075985' : '#7f1d1d';
+    const speed = Math.hypot(player.vx, player.vy);
+    const running = player.state === 'running' && speed > 18;
+    const runAmount = running ? clamp(speed / Math.max(1, player.speed * 0.58), 0, 1) : 0;
+    const gait = this.simulationTime * (8 + runAmount * 5) + player.id * 1.37 + (player.team === 'away' ? 1.8 : 0);
+    const kickProgress = player.state === 'shooting' ? clamp(1 - player.stateTimer / 0.32, 0, 1)
+      : player.state === 'passing' ? clamp(1 - player.stateTimer / 0.24, 0, 1) : 0;
+    const lunge = player.state === 'tackling' ? clamp(1 - player.stateTimer / 0.22, 0, 1) : 0;
+    const carrier = this.ball.owner === player.team && this.ball.ownerId === player.id;
+    const bob = Math.sin(gait * 2) * runAmount * 1.25 + (carrier ? Math.sin(this.simulationTime * 12 + player.id) * 0.45 : 0);
+    const wobble = player.state === 'stunned' ? Math.sin(this.simulationTime * 18 + player.id) * 0.2 : 0;
+    const stride = Math.sin(gait) * 4.5 * runAmount;
+    const kickLeg = kickProgress * (player.state === 'shooting' ? 7 : 4);
+
     ctx.save();
-    ctx.translate(player.x, player.y);
+    ctx.translate(player.x, player.y + bob);
     if (active) {
       ctx.strokeStyle = 'rgba(253,230,138,0.98)';
       ctx.lineWidth = 3;
@@ -2189,65 +2592,204 @@ export class Game {
       ctx.fill();
     }
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.beginPath(); ctx.ellipse(2, 6, PLAYER_RADIUS, PLAYER_RADIUS * 0.58, 0, 0, PI2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(2, 6, PLAYER_RADIUS + lunge * 3, PLAYER_RADIUS * 0.58, 0, 0, PI2); ctx.fill();
+    ctx.rotate(player.angle + wobble);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = trim;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-5, 6); ctx.lineTo(-5 - stride * 0.72, 13 + lunge * 3);
+    ctx.moveTo(5, 6); ctx.lineTo(5 + stride * 0.72 + kickLeg, 13 + lunge * 2);
+    const armSwing = running ? stride * 0.55 : 0;
+    ctx.moveTo(-9, -3); ctx.lineTo(-14 - armSwing, 2);
+    ctx.moveTo(9, -3); ctx.lineTo(14 + armSwing, 2);
+    ctx.stroke();
+
     ctx.fillStyle = shirt;
     ctx.strokeStyle = trim;
     ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.arc(0, 0, PLAYER_RADIUS, 0, PI2); ctx.fill(); ctx.stroke();
-    ctx.rotate(player.angle);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, PLAYER_RADIUS + lunge * 2.5, PLAYER_RADIUS - lunge * 2, 0, 0, PI2);
+    ctx.fill();
+    ctx.stroke();
     ctx.fillStyle = '#f8fafc';
     ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(2, -4); ctx.lineTo(2, 4); ctx.closePath(); ctx.fill();
+    if (carrier) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.62)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.arc(0, 0, PLAYER_RADIUS - 4, -0.8, 0.8); ctx.stroke();
+    }
     ctx.restore();
   }
 
   private drawGoalkeeper(ctx: CanvasRenderingContext2D, keeper: Goalkeeper) {
     const diving = keeper.state === 'diving';
     const holding = keeper.state === 'holding';
+    const recovering = keeper.state === 'recovering';
     const poseAngle = diving
       ? Math.atan2(keeper.diveDirectionY, keeper.diveDirectionX)
       : keeper.angle;
-    const diveScale = diving ? 1.28 : 1;
+    const diveProgress = diving ? clamp(1 - keeper.stateTimer / GK_DIVE_DURATION, 0, 1) : 0;
+    const ready = keeper.state === 'positioning' ? 1 : 0;
+    const crouch = ready * 2.2 + Math.sin(this.simulationTime * 5 + (keeper.team === 'home' ? 0 : 1)) * 0.6;
+    const recoverSway = recovering ? Math.sin(this.simulationTime * 15) * 0.08 : 0;
+    const diveScale = diving ? 1.2 + diveProgress * 0.18 : 1;
     ctx.save();
-    ctx.translate(keeper.x, keeper.y);
+    ctx.translate(keeper.x, keeper.y + crouch + recoverSway * 2);
     ctx.fillStyle = 'rgba(0,0,0,0.28)';
     ctx.beginPath(); ctx.ellipse(2, 7, PLAYER_RADIUS + 4, 9, 0, 0, PI2); ctx.fill();
     ctx.rotate(poseAngle);
-    ctx.scale(diveScale, diving ? 0.78 : 1);
+    ctx.scale(diveScale, diving ? 0.76 : 1);
 
     const shirt = keeper.team === 'home' ? '#f59e0b' : '#a78bfa';
     const trim = keeper.team === 'home' ? '#7c2d12' : '#5b21b6';
-    ctx.strokeStyle = trim;
-    ctx.lineWidth = 3;
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = trim;
+    ctx.lineWidth = 3.5;
     ctx.beginPath();
     if (holding) {
-      ctx.moveTo(-10, -3); ctx.lineTo(-8, 11);
-      ctx.moveTo(10, -3); ctx.lineTo(8, 11);
+      ctx.moveTo(-10, -3); ctx.lineTo(-7, 7);
+      ctx.moveTo(10, -3); ctx.lineTo(7, 7);
     } else {
-      ctx.moveTo(-10, -3); ctx.lineTo(-19, -8);
-      ctx.moveTo(10, -3); ctx.lineTo(19, -8);
+      const reach = diving ? 21 + diveProgress * 4 : ready ? 16 : 19;
+      ctx.moveTo(-10, -3); ctx.lineTo(-reach, -8 - (diving ? 1 : 0));
+      ctx.moveTo(10, -3); ctx.lineTo(reach, -8 - (diving ? 1 : 0));
     }
     ctx.stroke();
     ctx.fillStyle = '#fef3c7';
-    ctx.beginPath(); ctx.arc(holding ? -8 : -20, holding ? 12 : -9, 4.5, 0, PI2); ctx.fill();
-    ctx.beginPath(); ctx.arc(holding ? 8 : 20, holding ? 12 : -9, 4.5, 0, PI2); ctx.fill();
+    const gloveX = holding ? 0 : diving ? 23 + diveProgress * 3 : 20;
+    const gloveY = holding ? 8 : -9;
+    ctx.beginPath(); ctx.arc(-gloveX, gloveY, 4.5, 0, PI2); ctx.fill();
+    ctx.beginPath(); ctx.arc(gloveX, gloveY, 4.5, 0, PI2); ctx.fill();
 
+    ctx.fillStyle = trim;
+    ctx.beginPath(); ctx.moveTo(-7, 11); ctx.lineTo(-10 - (diving ? 3 : 0), 17); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(7, 11); ctx.lineTo(10 + (diving ? 3 : 0), 17); ctx.stroke();
     ctx.fillStyle = shirt;
-    ctx.beginPath(); ctx.ellipse(0, 0, PLAYER_RADIUS + 2, PLAYER_RADIUS - 1, 0, 0, PI2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(0, 0, PLAYER_RADIUS + 2, PLAYER_RADIUS - 1, 0, 0, PI2); ctx.fill();
+    ctx.strokeStyle = trim;
+    ctx.stroke();
     ctx.fillStyle = '#fff';
     ctx.beginPath(); ctx.arc(0, -2, 4, 0, PI2); ctx.fill();
     ctx.restore();
   }
 
   private drawBall(ctx: CanvasRenderingContext2D) {
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.beginPath(); ctx.ellipse(this.ball.x + 2, this.ball.y + 4, BALL_RADIUS + 1, BALL_RADIUS * 0.55, 0, 0, PI2); ctx.fill();
+    const ball = this.ball;
+    const height = ball.visualHeight;
+    const shadowScale = clamp(1 - height * 0.012, 0.44, 1) + ball.bouncePulse * 0.08;
+    ctx.save();
+    ctx.globalAlpha = clamp(0.27 - height * 0.0025, 0.08, 0.27);
+    ctx.fillStyle = '#030712';
+    ctx.beginPath();
+    ctx.ellipse(ball.x + 2, ball.y + 4, (BALL_RADIUS + 1) * shadowScale, BALL_RADIUS * 0.55 * shadowScale, 0, 0, PI2);
+    ctx.fill();
+    ctx.restore();
+
+    const ballScale = 1 + clamp(height * 0.0015 + ball.bouncePulse * 0.06, 0, 0.12);
+    ctx.save();
+    ctx.translate(ball.x, ball.y - height);
+    ctx.rotate(ball.rotation);
+    ctx.scale(ballScale, ballScale);
     ctx.fillStyle = '#f8fafc';
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(this.ball.x, this.ball.y, BALL_RADIUS, 0, PI2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, BALL_RADIUS, 0, PI2); ctx.fill(); ctx.stroke();
     ctx.fillStyle = '#0f172a';
-    ctx.beginPath(); ctx.arc(this.ball.x, this.ball.y, 2.2, 0, PI2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(0, -3.2);
+    ctx.lineTo(3.1, -1);
+    ctx.lineTo(2, 2.7);
+    ctx.lineTo(-2, 2.7);
+    ctx.lineTo(-3.1, -1);
+    ctx.closePath();
+    ctx.fill();
+    for (let panel = 0; panel < 5; panel++) {
+      const angle = panel * PI2 / 5;
+      ctx.beginPath();
+      ctx.moveTo(Math.cos(angle) * 5.1, Math.sin(angle) * 5.1);
+      ctx.lineTo(Math.cos(angle + 0.48) * 7, Math.sin(angle + 0.48) * 7);
+      ctx.lineTo(Math.cos(angle + 0.86) * 5.1, Math.sin(angle + 0.86) * 5.1);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private drawEffects(ctx: CanvasRenderingContext2D) {
+    ctx.save();
+    for (let i = 0; i < this.effects.length; i++) {
+      const effect = this.effects[i];
+      if (!effect.active) continue;
+      const alpha = clamp(effect.life / effect.maxLife, 0, 1);
+      const color = EFFECT_COLORS[clamp(effect.color, 0, EFFECT_COLORS.length - 1)];
+      if (effect.kind === 'dust') {
+        ctx.globalAlpha = alpha * 0.34;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.ellipse(effect.x, effect.y, effect.size * (1.25 - alpha * 0.25), effect.size * 0.58, effect.rotation, 0, PI2);
+        ctx.fill();
+      } else if (effect.kind === 'trail') {
+        ctx.globalAlpha = alpha * 0.48;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.ellipse(effect.x, effect.y, effect.size * (0.55 + alpha * 0.55), effect.size * 0.72, effect.rotation, 0, PI2);
+        ctx.fill();
+      } else if (effect.kind === 'spark') {
+        ctx.globalAlpha = alpha * 0.86;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(0.7, effect.size * 0.48);
+        ctx.beginPath();
+        ctx.moveTo(effect.x - effect.size, effect.y);
+        ctx.lineTo(effect.x + effect.size, effect.y);
+        ctx.moveTo(effect.x, effect.y - effect.size);
+        ctx.lineTo(effect.x, effect.y + effect.size);
+        ctx.stroke();
+      } else if (effect.kind === 'confetti') {
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.82;
+        ctx.fillStyle = color;
+        ctx.translate(effect.x, effect.y);
+        ctx.rotate(effect.rotation);
+        ctx.fillRect(-effect.size * 0.4, -effect.size * 0.8, effect.size * 0.8, effect.size * 1.6);
+        ctx.restore();
+      } else {
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = color;
+        ctx.font = '900 13px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = 'rgba(0,0,0,0.72)';
+        ctx.shadowBlur = 5;
+        ctx.fillText(FLOATING_LABELS[clamp(effect.textCode, 0, FLOATING_LABELS.length - 1)], effect.x, effect.y);
+        ctx.shadowBlur = 0;
+      }
+    }
+    ctx.restore();
+  }
+
+  private drawKickoffPulse(ctx: CanvasRenderingContext2D) {
+    if (this.kickoffTimer <= 0) return;
+    const progress = clamp(1 - this.kickoffTimer / 0.72, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = (1 - progress) * 0.7;
+    ctx.strokeStyle = '#fde68a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(CENTER_X, CENTER_Y, 20 + progress * 34, 0, PI2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  private drawScreenFlash(ctx: CanvasRenderingContext2D) {
+    if (this.goalFlashTimer <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = clamp(this.goalFlashTimer / 0.24, 0, 1) * 0.19;
+    ctx.fillStyle = '#fff4c2';
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
   }
 
   /** World-space goal pulse; rendered after the camera transform so it follows the net. */
