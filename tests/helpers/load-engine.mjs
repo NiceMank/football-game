@@ -9,6 +9,7 @@ export { checkBall, awardRestart, foul } from './rules';
 export { shoot, passTo } from './actions';
 export { attachKeyboard, KEYS } from './input';
 export { bestSwitch, choosePassTarget } from './human';
+export { ASSIST, setAssistLevel } from './assist';
 `;
 
 /** Bundles the TypeScript engine (plus a few internals used by tests) into an importable ES module for Node. */

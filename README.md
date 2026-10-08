@@ -62,6 +62,14 @@ Coup d'envoi, but (ballon entièrement au-delà de la ligne, entre les poteaux, 
 
 La simulation tourne à pas fixe (`1/120 s`), les décisions IA sont cadencées par minuteurs, et la boucle de rendu ne fait pas d'allocation par image.
 
+### Assistance
+
+`src/game/assist.ts` regroupe l'assistance du joueur humain (niveaux `low` / `medium` / `high`, `medium` par défaut : passe 0,55, tir 0,35, défense 0,45). Elle élargit la recherche du coéquipier dans la direction visée et retrouve un coéquipier proche juste à côté de la visée, met le tir sur le cadre quand la direction est proche du but (une direction nettement à côté reste à côté), et règle la portée du tacle sur `X` et une légère correction de la course vers le porteur. Elle ne rend ni les passes, ni les tirs, ni les tacles parfaits : l'erreur et les interceptions restent.
+
+### Défense IA
+
+Le presseur lit le porteur avec un temps de réaction (lecture rafraîchie toutes les 0,1 à 0,25 s puis extrapolée) : un changement de direction est vu en retard. Il choisit entre **contenir** (distance qui grandit avec la vitesse du porteur, pas chassés plus lents qu'une course), **presser** (porteur lent, dos au but, ballon juste perdu, près de la surface) et **revenir côté but** s'il est dépassé ; le tacle se tente au bon moment, et un tacle sur une lecture périmée est raté plus souvent. Les autres défenseurs couvrent et marquent au lieu de venir sur le ballon.
+
 ### Difficulté
 
 **Amateur / Pro / Légende** modifie surtout la qualité des décisions (réaction, vision, anticipation, pressing, précision des passes et tirs). La vitesse des joueurs ne change pas et les gardiens restent faillibles à tous les niveaux.
@@ -71,6 +79,7 @@ La simulation tourne à pas fixe (`1/120 s`), les décisions IA sont cadencées 
 `npm test` exécute :
 
 - `tests/controls.mjs` : mapping clavier (Shift droit, Alt, X, T, C, R = sprint, Entrée, Échap, J/K/L inactifs), passe orientée, passe lobée, passe et tir au glissé, tir chargé, visée des poteaux, crochet, changement de joueur ;
+- `tests/feel.mjs` : défense sans effet « aimant » (distance de marquage, séparation sur un crochet, pas d'essaim), passe assistée (direction, coéquipier proche, ballon qui arrive, interceptions possibles), tir assisté (poteaux, visée partielle, tirs non tous cadrés), assistance défensive (pas de téléportation, tacles non automatiques), niveaux d'assistance, T et R ;
 - `tests/rules.mjs` : but / pas but, barre, sortie de but vs corner, touche, coup franc, penalty, cycle de chaque coup de pied arrêté, règle des 8 secondes ;
 - `tests/goalkeepers.mjs` : statistiques d'arrêts par difficulté (tirs puissants placés, tirs faibles centraux, tirs enroulés) ;
 - `tests/full-match.mjs` : matchs complets IA contre IA et humain contre IA, rythme, variété des plans et des arrêts de jeu, performance.

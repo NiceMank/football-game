@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/controls.mjs && node tests/rules.mjs && node tests/goalkeepers.mjs && node tests/full-match.mjs"
+    "test": "node tests/controls.mjs && node tests/feel.mjs && node tests/rules.mjs && node tests/goalkeepers.mjs && node tests/full-match.mjs"
   },
   "dependencies": {
     "react": "19.2.6",
