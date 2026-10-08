@@ -185,8 +185,8 @@ export function TouchControls({ inputRef, hud }: Props) {
   const defending = hud.defending;
   const corner = hud.humanTaking && hud.restartLabel === 'corner';
   const throwin = hud.humanTaking && hud.restartLabel === 'throwin';
-  const passLabel = defending ? 'TACLE' : throwin ? 'TOUCHE' : 'PASSE';
-  const shootLabel = defending ? 'GLISSÉ' : corner ? 'CENTRE' : throwin ? 'LONGUE' : 'TIR';
+  const passLabel = defending ? 'PRESSE' : throwin ? 'TOUCHE' : 'PASSE';
+  const shootLabel = defending ? 'À DEUX' : corner ? 'CENTRE' : throwin ? 'LONGUE' : 'TIR';
 
   const swipeLen = swipe ? Math.hypot(swipe.x - swipe.x0, swipe.y - swipe.y0) : 0;
   const swipePower = swipeLen >= SWIPE_MIN ? swipePowerOf(swipeLen) : 0;

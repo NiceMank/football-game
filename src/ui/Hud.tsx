@@ -95,8 +95,8 @@ export function Hud({ hud, touch, onPause }: Props) {
             </>
           ) : hud.defending ? (
             <>
-              <Hint k="X" t="tacle (près) · intervenir (à portée)" />
-              <Hint k="C" t="tacle glissé" />
+              <Hint k="X" t="presser · près = tacle" />
+              <Hint k="C" t="2e presseur · près = glissé" />
               <Hint k="R" t="sprint (maintenir)" />
               <Hint k="⇧ droit" t="changer de joueur" />
             </>

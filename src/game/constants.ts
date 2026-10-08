@@ -32,7 +32,7 @@ export const ROLL_DECEL = 24;
 export const AIR_K = 0.16;
 
 export const RUN_SPEED = 205;
-export const SPRINT_MULT = 1.38;
+export const SPRINT_MULT = 1.48;
 export const DRIBBLE_MULT = 0.93;
 export const ACCEL = 1150;
 export const CONTROL_DIST = PLAYER_R + BALL_R + 7;

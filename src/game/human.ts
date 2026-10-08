@@ -39,11 +39,17 @@ export class HumanController {
   private tackleBuffer = 0;
   /** Remaining time of a committed step-in toward the carrier (X from mid range). */
   lunge = 0;
+  /** Teammate sent to press with you while C is held in defence. */
+  secondPresser: Player | null = null;
+  /** How long the second presser keeps coming after C is released. */
+  secondPress = 0;
   private tapPass = TAP_PASS;
 
   reset() {
     this.tackleBuffer = 0;
     this.lunge = 0;
+    this.secondPresser = null;
+    this.secondPress = 0;
     this.passHold = -1;
     this.shootHold = -1;
     this.charge = 0;
@@ -153,6 +159,8 @@ export class HumanController {
     if (!defending) {
       this.tackleBuffer = 0;
       this.lunge = 0;
+      this.secondPress = 0;
+      this.secondPresser = null;
     } else if (input.passPressed && !p.busy && p.tackleCd <= 0) {
       // X without the ball depends on distance: tackle when close, a short committed step-in from a
       // little further, nothing from far away.
@@ -171,16 +179,28 @@ export class HumanController {
       if (this.lunge <= 0) p.stun = Math.max(p.stun, 0.2);
     } else if (receiving) {
       // The ball is coming to this player: he goes to meet it even if the stick is still held from
-      // the pass, otherwise he runs away from his own pass. Sprint is the player's choice, or
-      // automatic when the meeting point is far.
-      interceptTime(p, m);
-      p.steerTo(icpt.x, icpt.y, 1, input.sprint || dist(p.x, p.y, icpt.x, icpt.y) > 110, 8);
-    } else if (defending && input.pass && mag < 0.15 && b.owner) {
-      // Holding PASS while defending: assisted pressure on the carrier (goal-side jockey).
+      // the pass, otherwise he runs away from his own pass. A through ball is run onto: sprint to
+      // the pocket, then take the ball as it arrives.
+      if (b.through) {
+        interceptTime(p, m);
+        const s = b.speed || 1;
+        p.steerTo(icpt.x + (b.vx / s) * 26, icpt.y + (b.vy / s) * 26, 1, true, 18);
+      } else {
+        interceptTime(p, m);
+        p.steerTo(icpt.x, icpt.y, 1, input.sprint || dist(p.x, p.y, icpt.x, icpt.y) > 110, 8);
+      }
+    } else if (defending && input.pass && b.owner && this.lunge <= 0) {
+      // Holding X: you press. The stick picks the shoulder; with no stick you take the goal side.
       const c = b.owner;
       const gx = team.ownGoalX;
       const dg = Math.hypot(gx - c.x, CY - c.y) || 1;
-      p.steerTo(c.x + ((gx - c.x) / dg) * 24, c.y + ((CY - c.y) / dg) * 24, 1, input.sprint || dist(p.x, p.y, c.x, c.y) > 120, 10);
+      let ox = ((gx - c.x) / dg) * 30 + c.vx * 0.12;
+      let oy = ((CY - c.y) / dg) * 22 + c.vy * 0.12;
+      if (mag > 0.25) {
+        ox += mx * 22;
+        oy += my * 22;
+      }
+      p.steerTo(c.x + ox, c.y + oy, 1, input.sprint || dist(p.x, p.y, c.x, c.y) > 70, 14);
     } else if (defending && b.owner && mag > 0.2) {
       // Closing a carrier down: when the stick already points at him, the run is bent slightly onto
       // his goal-side line. Same pace, and the stick still decides.
@@ -198,7 +218,16 @@ export class HumanController {
     }
     if (input.dashPressed && mag > 0.2) p.sprint = true;
 
-    if (defending) {
+    if (defending && b.owner) {
+      if (input.shoot) {
+        this.secondPress = 0.2;
+        if (!this.secondPresser || this.secondPresser === p || this.secondPresser.busy || this.secondPresser.isGK) {
+          this.secondPresser = pressPartner(team, p, b.owner);
+        }
+      } else if (this.secondPress > 0) {
+        this.secondPress -= dt;
+        if (this.secondPress <= 0) this.secondPresser = null;
+      }
       if (this.tackleBuffer > 0) {
         this.tackleBuffer -= dt;
         if (b.ownerLock <= 0 && dist(p.x, p.y, b.x, b.y) < tackleReach()) {
@@ -207,7 +236,8 @@ export class HumanController {
           this.lunge = 0;
         }
       }
-      if (input.shootPressed) {
+      // C from close range is still a slide. From further away it only calls the second presser.
+      if (input.shootPressed && dist(p.x, p.y, b.x, b.y) < 68) {
         const dx = mag > 0.2 ? mx : b.x - p.x;
         const dy = mag > 0.2 ? my : b.y - p.y;
         slideTackle(m, p, dx, dy);
@@ -569,6 +599,11 @@ export class HumanController {
     }
   }
 
+  /** True while C is asking this teammate to press the carrier with the controlled player. */
+  wantsHelp(p: Player) {
+    return this.secondPress > 0 && this.secondPresser === p;
+  }
+
   /** Event-driven automatic switch when another teammate is clearly better placed. */
   autoSwitch(m: Match) {
     const team = m.humanTeam;
@@ -672,6 +707,25 @@ export function choosePassTarget(p: Player, dx: number, dy: number, minCos: numb
     let s = cos * 1.6 + open * 0.6 + distS * 0.5 + p.team.local(t.x) * 0.2;
     if (t.isGK) s -= 0.8;
     if (s > bestS) {
+      bestS = s;
+      best = t;
+    }
+  }
+  return best;
+}
+
+/** Nearest outfield teammate to send at the carrier. Prefers someone who is not already on your shoulder. */
+function pressPartner(team: Team, self: Player, carrier: Player) {
+  let best: Player | null = null;
+  let bestS = 1e9;
+  const sx = self.x - carrier.x;
+  const sy = self.y - carrier.y;
+  for (const t of team.players) {
+    if (t === self || t.isGK || t.busy) continue;
+    const d = dist(t.x, t.y, carrier.x, carrier.y);
+    const sameSide = sx * (t.x - carrier.x) + sy * (t.y - carrier.y) > 0 ? 80 : 0;
+    const s = d + sameSide;
+    if (s < bestS) {
       bestS = s;
       best = t;
     }
