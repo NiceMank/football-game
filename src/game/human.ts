@@ -1,7 +1,8 @@
 import { groundPassSpeed, groundTime, knockOn, passTo, shoot, slideTackle, tackle } from './actions';
 import { icpt, interceptTime, laneRisk, nearestOpponentDist } from './ai';
-import { CONTROL_DIST, CY, GOAL_HALF, GROUND_K, PASS_K, PITCH_L, PITCH_W, PLAYER_R, ROLL_DECEL } from './constants';
-import { clamp, dist, rand } from './math';
+import { CONTROL_DIST, CY, GOAL_HALF, GROUND_K, PASS_K, PITCH_L, PITCH_W, ROLL_DECEL } from './constants';
+import { ASSIST, approachBlend, humanTackle, lungeRange, passConeCos, passErrorMul, passRescueDist, shotErrorMul, shotPostInset, shotWindow, tackleReach } from './assist';
+import { angleDiff, clamp, dist, rand } from './math';
 import type { Match } from './match';
 import type { Player } from './player';
 import type { Team } from './team';
@@ -13,9 +14,6 @@ const TAP_SHOT = 0.14;
 /** Largest lead given to a moving receiver (about 8 m). */
 const MAX_PASS_LEAD = 120;
 const SHOT_CHARGE_TIME = 0.85;
-const HUMAN_TACKLE = 0.6;
-/** X without the ball: beyond this distance from the ball it does nothing. */
-const LUNGE_RANGE = 115;
 const LUNGE_TIME = 0.42;
 /** Through ball: space played ahead of the runner (min / max). */
 const THROUGH_LEAD_MIN = 90;
@@ -162,8 +160,8 @@ export class HumanController {
       // X without the ball depends on distance: tackle when close, a short committed step-in from a
       // little further, nothing from far away.
       const db = dist(p.x, p.y, b.x, b.y);
-      if (db < PLAYER_R + 26) this.tackleBuffer = 0.3;
-      else if (db < LUNGE_RANGE) {
+      if (db < tackleReach()) this.tackleBuffer = 0.3;
+      else if (db < lungeRange()) {
         this.lunge = LUNGE_TIME;
         this.tackleBuffer = LUNGE_TIME;
       }
@@ -186,6 +184,18 @@ export class HumanController {
       const gx = team.ownGoalX;
       const dg = Math.hypot(gx - c.x, CY - c.y) || 1;
       p.steerTo(c.x + ((gx - c.x) / dg) * 24, c.y + ((CY - c.y) / dg) * 24, 1, input.sprint || dist(p.x, p.y, c.x, c.y) > 120, 10);
+    } else if (defending && b.owner && mag > 0.2) {
+      // Closing a carrier down: when the stick already points at him, the run is bent slightly onto
+      // his goal-side line. Same pace, and the stick still decides.
+      const c = b.owner;
+      const gx = team.ownGoalX;
+      const dg = Math.hypot(gx - c.x, CY - c.y) || 1;
+      const ax = c.x + ((gx - c.x) / dg) * 26 + c.vx * 0.2 - p.x;
+      const ay = c.y + ((CY - c.y) / dg) * 26 + c.vy * 0.2 - p.y;
+      const ad = Math.hypot(ax, ay) || 1;
+      const cos = (ax * mx + ay * my) / ad;
+      const k = approachBlend() * clamp((cos - 0.55) / 0.3, 0, 1) * clamp((240 - ad) / 80, 0, 1);
+      p.steerDir(mx * (1 - k) + (ax / ad) * k, my * (1 - k) + (ay / ad) * k, mag, input.sprint);
     } else {
       p.steerDir(mx, my, mag, input.sprint);
     }
@@ -194,8 +204,8 @@ export class HumanController {
     if (defending) {
       if (this.tackleBuffer > 0) {
         this.tackleBuffer -= dt;
-        if (b.ownerLock <= 0 && dist(p.x, p.y, b.x, b.y) < PLAYER_R + 26) {
-          tackle(m, p, HUMAN_TACKLE);
+        if (b.ownerLock <= 0 && dist(p.x, p.y, b.x, b.y) < tackleReach()) {
+          tackle(m, p, humanTackle());
           this.tackleBuffer = 0;
           this.lunge = 0;
         }
@@ -221,7 +231,7 @@ export class HumanController {
       }
       if (this.queued === 'shoot' && this.shootHold >= 0) this.queuedPower = this.charge;
       // Close to a loose ball: a pass press pokes it rather than waiting.
-      if (input.passPressed && b.z < 20 && dist(p.x, p.y, b.x, b.y) < CONTROL_DIST + 4 && b.speed > 520) tackle(m, p, HUMAN_TACKLE);
+      if (input.passPressed && b.z < 20 && dist(p.x, p.y, b.x, b.y) < CONTROL_DIST + 4 && b.speed > 520) tackle(m, p, humanTackle());
     }
     this.releaseHolds(input);
   }
@@ -244,7 +254,7 @@ export class HumanController {
     if (q === 'shoot') {
       const power = Math.max(0.6, this.queuedPower, this.shootHold >= 0 ? this.charge : 0);
       const header = b.z > 22;
-      shoot(m, p, this.keyboardAimY(p), power, { error: 18, header, aimZ: header ? rand(10, 45) : undefined });
+      shoot(m, p, this.keyboardAimY(p), power, { error: 18 * shotErrorMul(), header, aimZ: header ? rand(10, 45) : undefined });
       this.shootHold = -1;
       this.queuedPower = 0;
       m.effects.showBanner(header ? 'TÊTE !' : 'REPRISE !', '', '#fde047', 0.9);
@@ -266,7 +276,24 @@ export class HumanController {
    */
   shotAimY(p: Player, hold: number) {
     const powered = hold >= TAP_SHOT;
-    if (Math.abs(this.moveY) > 0.3) return CY + Math.sign(this.moveY) * (GOAL_HALF - (powered ? 13 : 16));
+    const half = GOAL_HALF - shotPostInset() - (powered ? 0 : 3);
+    const gx = p.team.oppGoalX;
+    if (Math.hypot(this.moveX, this.moveY) > 0.2 && this.moveX * p.team.dir > 0.2) {
+      // The stick points up the pitch. Within the assist window of the goal mouth the shot is put on
+      // the frame; clearly wider than that it follows the stick, only pulled a little toward goal.
+      const ac = Math.atan2(CY - p.y, gx - p.x);
+      const rs = angleDiff(ac, Math.atan2(this.moveY, this.moveX));
+      const r1 = angleDiff(ac, Math.atan2(CY - half - p.y, gx - p.x));
+      const r2 = angleDiff(ac, Math.atan2(CY + half - p.y, gx - p.x));
+      const off = Math.max(0, Math.min(r1, r2) - rs, rs - Math.max(r1, r2));
+      if (off > shotWindow()) {
+        const rawY = clamp(p.y + (this.moveY / this.moveX) * (gx - p.x), CY - 500, CY + 500);
+        const edge = clamp(rawY, CY - half, CY + half);
+        return rawY + (edge - rawY) * ASSIST.shot;
+      }
+    }
+    // Vertical stick picks the side: a full tilt (or a keyboard key) is the post, a partial tilt in between.
+    if (Math.abs(this.moveY) > 0.3) return CY + clamp(this.moveY * 1.6, -1, 1) * half;
     return powered ? CY : farSideAim(p);
   }
 
@@ -306,7 +333,7 @@ export class HumanController {
     // Empty space is used only for that aim. An unaimed tap stays a smart pass, previewed first.
     const target = swipe ? choosePassTarget(p, dx, dy, 0.7) : passReceiver(p, dx, dy, directed);
     const throwing = m.state === 'taking' && m.restart?.type === 'throwin';
-    const err = 0.028 * (1 + m.pressureOn(p) * 0.8);
+    const err = 0.028 * (1 + m.pressureOn(p) * 0.8) * passErrorMul();
     if (target) {
       // Meeting point: where the receiver will be when the ball gets there, with a capped lead so a
       // running teammate can keep his stride without the ball being played far ahead of him.
@@ -418,7 +445,7 @@ export class HumanController {
         bv = v0;
       }
     }
-    const err = 0.028 * (1 + m.pressureOn(p) * 0.8);
+    const err = 0.028 * (1 + m.pressureOn(p) * 0.8) * passErrorMul();
     if (best) {
       m.humanTeam!.controlled = best;
       passTo(m, p, bx, by, { target: best, error: err, speed: bv, through: true });
@@ -489,7 +516,7 @@ export class HumanController {
       passTo(m, p, tx, ty, { lob: true, kind: 'cross', target: best, error: 0.05, height: 0.85 + power * 0.25 });
       return;
     }
-    shoot(m, p, aimY, power, { finesse, error: 15 });
+    shoot(m, p, aimY, power, { finesse, error: 15 * shotErrorMul() });
   }
 
   private handleRestart(dt: number, input: InputState, m: Match, team: Team, p: Player) {
@@ -602,8 +629,26 @@ export function bestSwitch(team: Team, m: Match, exclude: Player | null, rank: n
  * Undirected tap: the best teammate ahead, or a close support player, and the preview shows which.
  */
 export function passReceiver(p: Player, dx: number, dy: number, directed: boolean) {
-  if (directed) return choosePassTarget(p, dx, dy, 0.4);
+  if (directed) return choosePassTarget(p, dx, dy, passConeCos()) ?? nearbyTeammate(p, dx, dy);
   return choosePassTarget(p, dx, dy, 0.15) ?? choosePassTarget(p, dx, dy, -0.2);
+}
+
+/** A close teammate just outside the aimed cone: found rather than playing the ball past him into nothing. */
+function nearbyTeammate(p: Player, dx: number, dy: number) {
+  const n = Math.hypot(dx, dy) || 1;
+  const minCos = passConeCos() - 0.35;
+  const maxD = passRescueDist();
+  let best: Player | null = null;
+  let bd = maxD;
+  for (const t of p.team.players) {
+    if (t === p || t.isGK) continue;
+    const d = dist(p.x, p.y, t.x, t.y);
+    if (d < 40 || d > bd) continue;
+    if (((t.x - p.x) * dx + (t.y - p.y) * dy) / (d * n) < minCos) continue;
+    bd = d;
+    best = t;
+  }
+  return best;
 }
 
 /** Assisted pass target in a direction (minCos is the cone tightness). */
