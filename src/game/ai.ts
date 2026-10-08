@@ -1,5 +1,5 @@
 import { clearBall, groundPassSpeed, groundTime, knockOn, passTo, shoot, slideTackle, tackle } from './actions';
-import { BOX_DEPTH, BOX_HALF, CONTROL_DIST, CY, GOAL_HALF, GRAVITY, PITCH_L, PITCH_W, PLAYER_H, PLAYER_R } from './constants';
+import { BALL_R, BOX_DEPTH, BOX_HALF, CONTROL_DIST, CY, GOAL_HALF, GRAVITY, PITCH_L, PITCH_W, PLAYER_H, PLAYER_R } from './constants';
 import { clamp, dist, distToSegment, gauss, rand, segmentT } from './math';
 import type { Match } from './match';
 import type { Player } from './player';
@@ -345,42 +345,106 @@ export function shapePosition(p: Player, team: Team, bx: number, by: number, att
 
 function pressAI(p: Player, c: Player, team: Team, m: Match, dt: number) {
   const prof = team.profile;
+  const b = m.ball;
+  // The defender acts on a read of the carrier refreshed every ~0.1-0.25 s and extrapolated in
+  // between: a sharp change of direction is noticed late, so a good dribble buys a little space.
+  p.readT += dt;
+  if (p.readOf !== c || p.readT >= p.readEvery) {
+    p.readOf = c;
+    p.readT = 0;
+    p.readEvery = (0.09 + prof.reaction * 0.5) * rand(0.8, 1.25);
+    p.readX = c.x;
+    p.readY = c.y;
+    p.readVx = c.vx;
+    p.readVy = c.vy;
+  }
+  const age = Math.min(p.readT, 0.35);
+  const cx = p.readX + p.readVx * age;
+  const cy = p.readY + p.readVy * age;
   const gx = team.ownGoalX;
-  const toGoalX = gx - c.x;
-  const toGoalY = CY - c.y;
+  const toGoalX = gx - cx;
+  const toGoalY = CY - cy;
   const dg = Math.hypot(toGoalX, toGoalY) || 1;
+  const ux = toGoalX / dg;
+  const uy = toGoalY / dg;
   const d = dist(p.x, p.y, c.x, c.y);
-  const counterPress = m.time - team.lostAt < 3;
+  const counterPress = m.time - team.lostAt < 1.5;
   const danger = team.local(c.x) < 0.42;
   const engage = counterPress || danger || d < prof.pressRange * (0.6 + prof.press * 0.6);
   p.intent = 'press';
   if (!engage) {
     // Hold the zone in front of the carrier instead of diving in.
-    const hold = 150;
-    p.steerTo(c.x + (toGoalX / dg) * hold, c.y + (toGoalY / dg) * hold, 1, false);
+    p.steerTo(cx + ux * 150, cy + uy * 150, 1, false);
     return;
   }
-  const jockey = d < 60 ? 22 : 30;
-  const jx = c.x + (toGoalX / dg) * jockey + c.vx * 0.12;
-  const jy = c.y + (toGoalY / dg) * jockey + c.vy * 0.12;
-  const sprint = d > 60 && (prof.press > 0.6 || counterPress || danger) && p.stamina > 0.25;
-  p.steerTo(jx, jy, 1, sprint, 12);
+  const cSpeed = Math.hypot(p.readVx, p.readVy);
+  p.duelTimer -= dt;
+  if (p.duelTimer <= 0) {
+    // Contain (show him away, keep a gap) or press (close down to win it). Press a carrier who is
+    // slow, turned away from goal, just won the ball or is near our box.
+    p.duelTimer = rand(0.35, 0.6);
+    const turned = Math.cos(c.facing) * team.dir > 0.3;
+    let pPress = prof.press * 0.3;
+    if (cSpeed < 70) pPress += 0.3;
+    if (turned) pPress += 0.3;
+    if (counterPress) pPress += 0.3;
+    if (danger) pPress += 0.12;
+    p.duel = Math.random() < pPress ? 'press' : 'contain';
+  }
+  const goalSide = team.local(p.x) < team.local(c.x);
+  let tx: number;
+  let ty: number;
+  let sprint: boolean;
+  let arrive: number;
+  let urgency = 1;
+  if (!goalSide && d < 160) {
+    // Beaten or caught upfield: race back to the goal side, alongside the carrier rather than onto him.
+    tx = cx + ux * 36 + p.readVx * 0.25;
+    ty = cy + uy * 36 + p.readVy * 0.25;
+    sprint = p.stamina > 0.15;
+    arrive = 10;
+  } else if (p.duel === 'press') {
+    tx = cx + ux * 24 + p.readVx * 0.15;
+    ty = cy + uy * 24 + p.readVy * 0.15;
+    sprint = d > 60 && p.stamina > 0.25;
+    arrive = 8;
+  } else {
+    // Jockey: a real gap that grows with the carrier's pace, shifted to where he is heading.
+    const hold = 46 + Math.min(34, cSpeed * 0.12);
+    tx = cx + ux * hold + p.readVx * 0.3;
+    ty = cy + uy * hold + p.readVy * 0.3;
+    sprint = d > hold + 50 && p.stamina > 0.25;
+    arrive = 16;
+    // Side-stepping while facing the carrier is slower than running, so a lateral dribble gains a
+    // yard; dropping straight back keeps full pace.
+    const mx = tx - p.x;
+    const my = ty - p.y;
+    const ml = Math.hypot(mx, my) || 1;
+    if (!sprint && Math.abs((mx * ux + my * uy) / ml) < 0.6) urgency = 0.84;
+    // The carrier came onto him anyway: that is the moment of the duel.
+    if (d < 34) {
+      p.duel = 'press';
+      p.duelTimer = rand(0.3, 0.5);
+    }
+  }
+  p.steerTo(tx, ty, urgency, sprint, arrive);
   p.faceTowards(c.x, c.y);
 
   p.tackleThink -= dt;
   if (p.tackleThink > 0) return;
-  p.tackleThink = 0.12;
-  const b = m.ball;
+  p.tackleThink = 0.16;
   const db = dist(p.x, p.y, b.x, b.y);
   if (db > PLAYER_R + 20 || p.tackleCd > 0 || b.ownerLock > 0) return;
-  const exposure = dist(c.x, c.y, b.x, b.y) > PLAYER_R + 9 ? 0.25 : 0;
-  let prob = prof.press * 0.3 + exposure + (c.sprint ? 0.12 : 0);
+  const loose = dist(c.x, c.y, b.x, b.y) > PLAYER_R + BALL_R + 5 ? 0.28 : 0;
+  let prob = 0.06 + prof.press * 0.14 + loose + (c.sprint ? 0.08 : 0) + (p.duel === 'press' ? 0.08 : 0);
   if (team.human) prob *= 0.45;
   if (Math.random() < prob) {
+    // Going in on a stale read (the carrier just changed direction) is a mistimed tackle.
+    const misread = Math.hypot(c.vx - p.readVx, c.vy - p.readVy) > 90;
     const behind = team.local(p.x) > team.local(c.x) + 0.01;
     const desperate = danger && c.sprint && Math.random() < 0.18;
     if ((behind && Math.random() < 0.35 * prof.foulRisk * 3) || desperate) slideTackle(m, p, b.x - p.x, b.y - p.y);
-    else tackle(m, p, prof.tackle);
+    else tackle(m, p, prof.tackle * (misread ? 0.55 : 1));
   }
 }
 

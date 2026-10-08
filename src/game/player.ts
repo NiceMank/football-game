@@ -61,6 +61,20 @@ export class Player {
   dribbleX = 0;
   dribbleY = 0;
   tackleThink = 0;
+  /**
+   * A defender's read of the carrier he is facing: sampled every `readEvery` seconds and
+   * extrapolated in between, so a change of direction is only noticed after a short delay.
+   */
+  readOf: Player | null = null;
+  readX = 0;
+  readY = 0;
+  readVx = 0;
+  readVy = 0;
+  readT = 0;
+  readEvery = 0.2;
+  /** Current duel choice against the carrier, held for `duelTimer` seconds. */
+  duel: 'contain' | 'press' = 'contain';
+  duelTimer = 0;
 
   gk: KeeperBrain | null = null;
 
