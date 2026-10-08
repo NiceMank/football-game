@@ -95,16 +95,17 @@ export function Hud({ hud, touch, onPause }: Props) {
             </>
           ) : hud.defending ? (
             <>
-              <Hint k="X" t="tacle · maintenir = presser" />
+              <Hint k="X" t="tacle (près) · intervenir (à portée)" />
               <Hint k="C" t="tacle glissé" />
+              <Hint k="R" t="sprint (maintenir)" />
               <Hint k="⇧ droit" t="changer de joueur" />
-              <Hint k="Alt" t="sprint" />
             </>
           ) : (
             <>
               <Hint k="X" t="passe · maintenir = lobée" />
+              <Hint k="T" t="passe en profondeur" />
               <Hint k="C" t="tir · maintenir = puissance" />
-              <Hint k="Alt" t="sprint / crochet" />
+              <Hint k="R" t="sprint (maintenir)" />
               <Hint k="⇧ droit" t="changer de joueur" />
             </>
           )}

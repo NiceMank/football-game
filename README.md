@@ -18,18 +18,21 @@ npm test         # tests du moteur (Node + esbuild)
 | Touche | Action |
 | --- | --- |
 | `WASD` / flèches (`ZQSD` sur AZERTY) | déplacement |
-| `X` | passe (tap = passe intelligente, maintenir = passe lobée / en profondeur) · en défense : tacle, maintenir = pressing |
+| `X` | passe (tap = passe intelligente, maintenir = passe lobée) · en défense : tacle si le ballon est tout près, intervention courte un peu plus loin, rien de trop loin ; maintenir sans direction = pressing |
+| `T` | passe en profondeur dans la course d'un coéquipier placé devant (la direction choisit le côté) ; personne devant = ballon dans l'espace devant soi |
 | `C` | tir (tap = tir placé, maintenir = tir chargé, haut/bas = viser un poteau) · en défense : tacle glissé · sur corner : centre |
-| `Alt` | sprint / crochet (pousse le ballon devant) |
+| `R` | sprint (maintenir), avec ou sans ballon ; l'endurance baisse puis remonte progressivement |
+| `Alt` | crochet (pousse le ballon devant) · sprint aussi |
 | `Shift droit` | changer de joueur (appuis répétés = joueur suivant) |
 | `Échap` | pause |
-| `R` | recommencer |
+| `Entrée` | recommencer (en pause ou à la fin du match uniquement) |
 
 ### Mobile (paysage obligatoire)
 
 - **Joystick analogique** flottant à gauche (zone morte, retour visuel).
 - **PASSE** : tap = passe auto intelligente ; glisser = passe orientée, la longueur du glissé règle la puissance.
 - **TIR** : tap = tir contrôlé ; maintenir = charge ; glisser = visée (premier poteau, centre, second poteau) et puissance.
+- **PROF.** : passe en profondeur (le joystick choisit le côté).
 - **SPRINT** : maintenir pour accélérer (consomme l'endurance).
 - **SWITCH** : joueur le mieux placé.
 - En portrait, un écran « TOURNEZ VOTRE TÉLÉPHONE » bloque et met le match en pause ; au lancement, le jeu tente le plein écran et `screen.orientation.lock('landscape')`.
@@ -67,7 +70,7 @@ La simulation tourne à pas fixe (`1/120 s`), les décisions IA sont cadencées 
 
 `npm test` exécute :
 
-- `tests/controls.mjs` : mapping clavier (Shift droit, Alt, X, C, Échap, R, J/K/L inactifs), passe orientée, passe lobée, passe et tir au glissé, tir chargé, visée des poteaux, crochet, changement de joueur ;
+- `tests/controls.mjs` : mapping clavier (Shift droit, Alt, X, T, C, R = sprint, Entrée, Échap, J/K/L inactifs), passe orientée, passe lobée, passe et tir au glissé, tir chargé, visée des poteaux, crochet, changement de joueur ;
 - `tests/rules.mjs` : but / pas but, barre, sortie de but vs corner, touche, coup franc, penalty, cycle de chaque coup de pied arrêté, règle des 8 secondes ;
 - `tests/goalkeepers.mjs` : statistiques d'arrêts par difficulté (tirs puissants placés, tirs faibles centraux, tirs enroulés) ;
 - `tests/full-match.mjs` : matchs complets IA contre IA et humain contre IA, rythme, variété des plans et des arrêts de jeu, performance.

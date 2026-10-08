@@ -82,7 +82,7 @@ export function MainMenu(p: MenuProps) {
           <MenuChip onClick={p.onControls}>COMMANDES</MenuChip>
           <MenuChip onClick={p.onToggleSound}>{p.muted ? 'SON OFF' : 'SON ON'}</MenuChip>
         </div>
-        <div className="text-[10px] font-semibold text-white/40">{p.touch ? 'Mode paysage · joystick à gauche, glissez depuis PASSE / TIR pour orienter.' : 'WASD / flèches · X passe · C tir · Alt sprint · Shift droit changer · Échap pause'}</div>
+        <div className="text-[10px] font-semibold text-white/40">{p.touch ? 'Mode paysage · joystick à gauche, glissez depuis PASSE / TIR pour orienter.' : 'WASD / flèches · X passe · T profondeur · C tir · R sprint · Shift droit changer · Échap pause'}</div>
       </div>
 
       <div className="pointer-events-none hidden flex-1 items-end justify-end p-[4vh] lg:flex">
@@ -110,17 +110,21 @@ function MenuChip({ children, onClick }: { children: ReactNode; onClick: () => v
 export function ControlsPanel({ onClose }: { onClose: () => void }) {
   const rows: [string, string][] = [
     ['WASD / Flèches', 'Déplacement (ZQSD sur AZERTY)'],
-    ['X', 'Passe · maintenir = passe lobée / en profondeur'],
+    ['X', 'Passe · maintenir = passe lobée'],
+    ['T', 'Passe en profondeur dans la course d’un coéquipier (la direction choisit le côté)'],
     ['C', 'Tir · tap = tir placé, maintenir = puissance · ↑/↓ = poteau'],
-    ['Alt', 'Sprint (maintenir) · appui avec ballon = crochet / accélération'],
+    ['R', 'Sprint (maintenir) · consomme l’endurance'],
     ['Shift droit', 'Changer de joueur (le mieux placé, appuis répétés = suivant)'],
-    ['X / C en défense', 'Tacle (maintenir X = presser) · C = tacle glissé'],
+    ['X en défense', 'Tacle si le ballon est tout près · un peu plus loin = intervention courte · trop loin = rien'],
+    ['C en défense', 'Tacle glissé'],
+    ['Alt', 'Crochet / accélération avec le ballon'],
     ['Échap', 'Pause'],
-    ['R', 'Recommencer'],
+    ['Entrée', 'Recommencer (en pause ou en fin de match)'],
   ];
   const mobile: [string, string][] = [
     ['Joystick gauche', 'Déplacement analogique'],
     ['PASSE (tap)', 'Passe intelligente · glisser = passe orientée, la longueur = la puissance'],
+    ['PROF.', 'Passe en profondeur (le joystick choisit le côté)'],
     ['TIR', 'Tap = tir contrôlé · maintenir = charge · glisser = viser (1er / 2e poteau)'],
     ['SPRINT', 'Maintenir pour accélérer (consomme l’endurance)'],
     ['SWITCH', 'Joueur le mieux placé pour intervenir'],
@@ -181,7 +185,7 @@ export function PauseMenu(p: PauseProps) {
         <h2 className="text-5xl font-black italic">PAUSE</h2>
         <div className="mb-2 text-3xl font-black tabular-nums">{p.m.home.short} {p.m.home.score} - {p.m.away.score} {p.m.away.short}</div>
         <button type="button" onClick={p.onResume} className="rounded-lg bg-amber-400 py-2.5 font-black text-slate-950">▶ REPRENDRE</button>
-        <button type="button" onClick={p.onRestart} className="rounded-lg bg-white/10 py-2 font-black hover:bg-white/20">↻ RECOMMENCER (R)</button>
+        <button type="button" onClick={p.onRestart} className="rounded-lg bg-white/10 py-2 font-black hover:bg-white/20">↻ RECOMMENCER (Entrée)</button>
         <div className="flex gap-2">
           <button type="button" onClick={p.onControls} className="flex-1 rounded-lg bg-white/10 py-2 text-xs font-black hover:bg-white/20">COMMANDES</button>
           <button type="button" onClick={p.onToggleSound} className="flex-1 rounded-lg bg-white/10 py-2 text-xs font-black hover:bg-white/20">{p.muted ? 'SON OFF' : 'SON ON'}</button>
@@ -221,7 +225,7 @@ export function FullTime({ m, onReplay, onMenu }: { m: Match; onReplay: () => vo
             ))}
           </div>
           <div className="mt-3 flex w-full gap-2">
-            <button type="button" onClick={onReplay} className="flex-1 rounded-lg bg-amber-400 py-2.5 font-black text-slate-950">↻ REJOUER</button>
+            <button type="button" onClick={onReplay} className="flex-1 rounded-lg bg-amber-400 py-2.5 font-black text-slate-950">↻ REJOUER (Entrée)</button>
             <button type="button" onClick={onMenu} className="flex-1 rounded-lg bg-white/10 py-2.5 font-black hover:bg-white/20">MENU</button>
           </div>
         </div>

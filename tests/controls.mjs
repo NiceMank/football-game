@@ -21,7 +21,8 @@ function key(type, code, extra = {}) {
   const input = createInput();
   let paused = 0;
   let restarted = 0;
-  const detach = attachKeyboard(input, { onPause: () => paused++, onRestart: () => restarted++, isActive: () => true });
+  let active = true;
+  const detach = attachKeyboard(input, { onPause: () => paused++, onRestart: () => (restarted++, true), isActive: () => active });
 
   key('keydown', 'ShiftLeft');
   assert(!input.switchPressed, 'left Shift does not switch player');
@@ -49,6 +50,30 @@ function key(type, code, extra = {}) {
   assert(!input.sprint, 'releasing Alt stops the sprint');
   clearInputEdges(input);
 
+  key('keydown', 'KeyR');
+  assert(input.sprint && !input.dashPressed && restarted === 0, 'R held sprints (no dash, no restart)');
+  key('keydown', 'KeyX');
+  assert(input.sprint && input.passPressed, 'R + X: sprinting while passing');
+  key('keyup', 'KeyX');
+  key('keyup', 'KeyR');
+  assert(!input.sprint, 'releasing R stops the sprint');
+  clearInputEdges(input);
+
+  key('keydown', 'KeyT');
+  assert(input.throughPressed && !input.passPressed, 'T plays a through ball');
+  key('keyup', 'KeyT');
+  clearInputEdges(input);
+  assert(!input.throughPressed, 'through ball is a one-frame edge');
+
+  key('keydown', 'Enter');
+  assert(restarted === 0, 'Enter does nothing during play');
+  active = false;
+  key('keydown', 'KeyR');
+  assert(restarted === 0, 'R never restarts, even paused');
+  key('keydown', 'Enter');
+  assert(restarted === 1, 'Enter restarts when paused / at full time');
+  active = true;
+
   for (const [code, mx, my] of [['KeyW', 0, -1], ['KeyS', 0, 1], ['KeyA', -1, 0], ['KeyD', 1, 0], ['ArrowUp', 0, -1], ['ArrowDown', 0, 1], ['ArrowLeft', -1, 0], ['ArrowRight', 1, 0]]) {
     key('keydown', code);
     const ok = input.moveX === mx && input.moveY === my;
@@ -69,8 +94,6 @@ function key(type, code, extra = {}) {
 
   key('keydown', 'Escape');
   assert(paused === 1, 'Escape toggles pause');
-  key('keydown', 'KeyR');
-  assert(restarted === 1, 'R restarts');
   detach();
 }
 
@@ -336,4 +359,163 @@ function shotLineY(m) {
   E.passTo(m, p, r.x, r.y, { target: r });
   m.update(FIXED_DT);
   assert(E.bestSwitch(m.home, m, p, 0) === r, 'switch picks the receiver of a pass in flight');
+}
+
+/* ------------------------------ Through ball ------------------------------ */
+
+{
+  // T to a forward running in behind: played into the space ahead of his run, and he gets there.
+  const { m, p } = carrierSetup();
+  const fwd = m.home.players[4];
+  fwd.vx = 230;
+  fwd.vy = 0;
+  for (const o of m.away.players) if (!o.isGK) { o.x = 380; o.y = 100 + o.index * 150; }
+  const input = createInput();
+  input.throughPressed = true;
+  step(m, input, 1);
+  const b = m.ball;
+  assert(b.through && b.passTarget === fwd && m.home.controlled === fwd, 'T plays the through ball to the forward running ahead');
+  const lead = b.passTargetX - fwd.x;
+  assert(lead > 60 && lead < 190, `the through ball goes into the space ahead of the run, not miles ahead (${lead | 0})`);
+  let got = false;
+  for (let i = 0; i < Math.round(3 / FIXED_DT) && !got; i++) {
+    step(m, input, 1);
+    got = b.owner === fwd;
+  }
+  assert(got, 'the runner reaches the through ball');
+}
+{
+  // Nobody ahead: the ball is played into the space in front of the carrier, and stays on the pitch.
+  const { m, p } = carrierSetup();
+  for (const t of m.home.players) if (t !== p && !t.isGK) { t.x = 300; t.y = 200 + t.index * 100; }
+  const input = createInput();
+  input.throughPressed = true;
+  step(m, input, 1);
+  assert(m.ball.passTarget === null && m.ball.vx > 150 && m.ball.passTargetX > p.x + 120, 'T with nobody ahead plays into the space in front of the carrier');
+  const { m: m2, p: p2 } = carrierSetup();
+  for (const t of m2.home.players) if (t !== p2 && !t.isGK) { t.x = 300; t.y = 200; }
+  p2.x = 1400;
+  p2.y = 30;
+  m2.attachBall(FIXED_DT);
+  const in2 = createInput();
+  in2.moveX = 0.6;
+  in2.moveY = -0.8;
+  in2.throughPressed = true;
+  step(m2, in2, 1);
+  const b = m2.ball;
+  assert(b.passTargetX <= 1450 && b.passTargetY >= 35, `a through ball near the corner never targets outside the pitch (${b.passTargetX | 0}, ${b.passTargetY | 0})`);
+  const rx = b.restX();
+  const ry = b.restY();
+  assert(rx > 0 && rx < 1500 && ry > 0 && ry < 900, `...and it comes to rest on the pitch (${rx | 0}, ${ry | 0})`);
+}
+{
+  // Defenders follow the run first instead of reading the exact destination at once.
+  const { m } = carrierSetup();
+  const fwd = m.home.players[4];
+  fwd.vx = 230;
+  const input = createInput();
+  input.throughPressed = true;
+  step(m, input, 1);
+  let tracked = false;
+  for (let i = 0; i < Math.round(0.2 / FIXED_DT); i++) {
+    step(m, input, 1);
+    if (m.away.tracker) tracked = true;
+  }
+  assert(tracked, 'a defender is assigned to follow the runner of a through ball');
+}
+
+/* ------------------------------- Defending X ------------------------------ */
+
+function defendSetup(gap) {
+  const m = liveMatch(E);
+  const c = m.away.players[3];
+  for (const o of m.away.players) if (!o.isGK && o !== c) { o.x = 1200; o.y = 100 + o.index * 150; }
+  c.x = 700; c.y = CY; c.vx = c.vy = 0;
+  m.gainPossession(c);
+  m.ball.ownerLock = 0;
+  m.attachBall(FIXED_DT);
+  const d = m.home.players[2];
+  for (const t of m.home.players) if (t !== d && !t.isGK) { t.x = 200; t.y = 100 + t.index * 150; }
+  d.x = 700 - gap; d.y = CY; d.vx = d.vy = 0;
+  d.facing = 0;
+  m.home.controlled = d;
+  return { m, c, d };
+}
+{
+  const { m, d } = defendSetup(24);
+  const input = createInput();
+  input.pass = true;
+  input.passPressed = true;
+  step(m, input, 1);
+  assert(d.tackleCd > 0, 'X right next to the carrier tackles');
+}
+{
+  const { m, d } = defendSetup(85);
+  const input = createInput();
+  input.pass = true;
+  input.passPressed = true;
+  step(m, input, 1);
+  input.pass = false;
+  const x0 = d.x;
+  step(m, input, 10);
+  assert(m.human.lunge > 0 && d.x > x0 + 4, 'X a little away from the carrier steps in toward the ball');
+}
+{
+  const { m, d } = defendSetup(320);
+  const input = createInput();
+  input.passPressed = true;
+  step(m, input, 1);
+  const x0 = d.x;
+  step(m, input, 20);
+  assert(d.tackleCd <= 0 && m.human.lunge === 0 && Math.abs(d.x - x0) < 3, 'X far from the carrier does nothing (no absurd tackle, no forced run)');
+}
+{
+  let won = 0;
+  let missed = 0;
+  for (let i = 0; i < 60; i++) {
+    const { m, c, d } = defendSetup(24);
+    const input = createInput();
+    input.passPressed = true;
+    step(m, input, 1);
+    if (m.ball.owner !== c) won++;
+    else if (d.stun > 0) missed++;
+  }
+  assert(won >= 10 && missed >= 10, `a close tackle can win the ball or miss (${won} won, ${missed} missed of 60)`);
+}
+{
+  // Manual defence: without X the controlled defender only follows the stick.
+  const { m, d } = defendSetup(60);
+  const input = createInput();
+  input.moveY = 1;
+  step(m, input, 30);
+  assert(d.y > CY + 20 && d.tackleCd <= 0, 'without X the defender goes where the stick says, never thrown at the ball');
+}
+
+/* --------------------------------- Sprint -------------------------------- */
+
+function runFor(withBall, sprint, stamina = 1) {
+  const { m, p } = carrierSetup();
+  for (const o of m.away.players) if (!o.isGK) { o.x = 200; o.y = 100 + o.index * 150; }
+  if (!withBall) {
+    m.ball.owner = null;
+    m.ball.place(100, 100);
+  }
+  p.stamina = stamina;
+  m.home.controlled = p;
+  const input = createInput();
+  input.moveX = 1;
+  input.sprint = sprint;
+  step(m, input, Math.round(0.9 / FIXED_DT));
+  return { speed: p.speed, stamina: p.stamina };
+}
+{
+  const walk = runFor(false, false);
+  const run = runFor(false, true);
+  const walkBall = runFor(true, false);
+  const runBall = runFor(true, true);
+  assert(run.speed > walk.speed * 1.25, `R sprint is clearly faster without the ball (${walk.speed | 0} -> ${run.speed | 0})`);
+  assert(runBall.speed > walkBall.speed * 1.2, `R sprint is clearly faster with the ball (${walkBall.speed | 0} -> ${runBall.speed | 0})`);
+  assert(run.stamina < walk.stamina - 0.05, 'sprinting drains stamina');
+  const tired = runFor(false, true, 0.12);
+  assert(tired.speed < run.speed * 0.85 && tired.speed >= walk.speed * 0.85, `a tired player loses most of his sprint (${tired.speed | 0})`);
 }
