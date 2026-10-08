@@ -176,6 +176,11 @@ export function TouchControls({ inputRef, hud }: Props) {
     e.preventDefault();
     inputRef.current.switchPressed = true;
   };
+  const throughDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    inputRef.current.touch = true;
+    inputRef.current.throughPressed = true;
+  };
 
   const defending = hud.defending;
   const corner = hud.humanTaking && hud.restartLabel === 'corner';
@@ -240,6 +245,17 @@ export function TouchControls({ inputRef, hud }: Props) {
           >
             SWITCH
           </button>
+          {!defending && !hud.humanTaking && (
+            <button
+              type="button"
+              className="pointer-events-auto absolute bottom-[22px] right-[194px] grid h-[54px] w-[54px] place-items-center rounded-full border-2 border-violet-100/80 bg-violet-500/85 text-center text-[9px] font-black italic leading-tight text-white shadow-lg active:scale-95"
+              style={{ touchAction: 'none' }}
+              onPointerDown={throughDown}
+              aria-label="Passe en profondeur"
+            >
+              PROF.
+            </button>
+          )}
         </div>
       </div>
 

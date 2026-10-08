@@ -35,6 +35,8 @@ export class Ball {
   shotId = 0;
   /** Distance a ground pass still rolls with pass friction before it slows like a loose ball. */
   rollLeft = 0;
+  /** Played into the space ahead of a run: defenders need a moment to read where it is going. */
+  through = false;
   /** Short protection after winning the ball so possession cannot flip-flop every frame. */
   ownerLock = 0;
   /** The keeper that last touched a shot (used to award a save once). */
@@ -68,6 +70,7 @@ export class Ball {
     this.savedBy = null;
     this.trailCount = 0;
     this.rollLeft = 0;
+    this.through = false;
   }
 
   kick(by: Player, vx: number, vy: number, vz: number, kind: KickKind, target: Player | null = null) {
@@ -86,6 +89,7 @@ export class Ball {
     this.savedBy = null;
     this.trailCount = 0;
     this.rollLeft = 0;
+    this.through = false;
     if (kind === 'shot') this.shotId++;
   }
 

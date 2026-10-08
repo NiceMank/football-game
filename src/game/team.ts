@@ -67,6 +67,8 @@ export class Team {
   cover: Player | null = null;
   chaser: Player | null = null;
   interceptor: Player | null = null;
+  /** Defender following the runner a through ball is played to. */
+  tracker: Player | null = null;
   /** Pending defensive reassignment delay (models reaction time). */
   reassignDelay = 0;
   /** Completed passes in this possession that did not gain ground (drives impatience). */

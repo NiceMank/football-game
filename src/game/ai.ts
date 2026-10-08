@@ -121,6 +121,7 @@ function assignRoles(team: Team, m: Match) {
   team.cover = null;
   team.chaser = null;
   team.interceptor = null;
+  team.tracker = null;
   for (const p of team.players) p.markTarget = null;
 
   if (c && c.team === team) return;
@@ -185,6 +186,19 @@ function assignRoles(team: Team, m: Match) {
   if (b.passTarget && b.passTarget.team !== team && b.kind !== 'shot') {
     // Read the pass: only good anticipation lets a player jump the lane.
     if (best && Math.random() < 0.35 + team.profile.anticipation * 0.6) team.interceptor = best;
+    if (b.through) {
+      // The nearest goal-side defender follows the runner.
+      const r = b.passTarget;
+      let td = 1e9;
+      for (const p of team.players) {
+        if (p.isGK || p.busy || p === team.interceptor) continue;
+        const d = dist(p.x, p.y, r.x, r.y) + (team.local(p.x) > team.local(r.x) ? 90 : 0);
+        if (d < td) {
+          td = d;
+          team.tracker = p;
+        }
+      }
+    }
   } else {
     team.chaser = best;
   }
@@ -221,6 +235,18 @@ function updatePlayerAI(p: Player, team: Team, m: Match, dt: number) {
     p.intent = 'run';
     const far = b.vy * team.dir >= 0 ? 1 : -1;
     p.steerTo(team.oppGoalX - team.dir * (p.role === 'FWD' ? 70 : 120), CY + far * (p.role === 'FWD' ? 30 : -50), 1, true, 10);
+    return;
+  }
+  if (b.free && b.through && b.passTarget && b.passTarget.team !== team && (team.tracker === p || team.interceptor === p)) {
+    // A through ball is not read instantly: first follow the run, then turn and race for the ball.
+    const read = 0.22 + (1 - team.profile.anticipation) * 0.35;
+    if (b.kickAge < read) {
+      trackRun(p, b.passTarget, team);
+      return;
+    }
+    p.intent = 'intercept';
+    interceptTime(p, m);
+    p.steerTo(icpt.x, icpt.y, 1, true, 6);
     return;
   }
   if (b.free && (team.chaser === p || team.interceptor === p)) {
@@ -376,6 +402,15 @@ function coverAI(p: Player, c: Player, team: Team, m: Match) {
   void m;
 }
 
+/** Run with an attacker, staying on his goal side. */
+function trackRun(p: Player, r: Player, team: Team) {
+  const dgx = team.ownGoalX - r.x;
+  const dgy = CY - r.y;
+  const dg = Math.hypot(dgx, dgy) || 1;
+  p.intent = 'mark';
+  p.steerTo(r.x + r.vx * 0.3 + (dgx / dg) * 20, r.y + r.vy * 0.3 + (dgy / dg) * 20, 1, true, 8);
+}
+
 function markAI(p: Player, team: Team, m: Match, dt: number) {
   const prof = team.profile;
   p.think -= dt;
@@ -527,7 +562,7 @@ export function shotQuality(p: Player, m: Match, x = p.x, y = p.y) {
 }
 
 /** Lane risk 0..1 of a ground pass from (ax,ay) to (bx,by) at speed v0, against `team`'s opponents. */
-function laneRisk(team: Team, ax: number, ay: number, bx: number, by: number, v0: number, ignore: Player | null) {
+export function laneRisk(team: Team, ax: number, ay: number, bx: number, by: number, v0: number, ignore: Player | null) {
   const d = Math.hypot(bx - ax, by - ay);
   let risk = 0;
   for (const o of team.opp.players) {

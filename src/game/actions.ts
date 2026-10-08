@@ -4,7 +4,6 @@ import type { Match } from './match';
 import type { Player } from './player';
 import type { KickKind } from './types';
 
-/** Initial speed so a ground pass covers `d` and still arrives with `arrive` speed. */
 /**
  * Launch speed of a ground pass over d: the ball should still be travelling at `arrive` when it
  * reaches the receiver. Short passes are soft, long ones firmer, and the arrival pace grows a little
@@ -28,6 +27,7 @@ export interface PassOptions {
   speed?: number;
   kind?: KickKind;
   height?: number;
+  through?: boolean;
 }
 
 export function passTo(m: Match, p: Player, tx: number, ty: number, o: PassOptions = {}) {
@@ -58,7 +58,8 @@ export function passTo(m: Match, p: Player, tx: number, ty: number, o: PassOptio
   b.passTargetX = tx;
   b.passTargetY = ty;
   // A ground pass keeps its pace up to its destination (plus a little slack), then slows like a loose ball.
-  if (!o.lob) b.rollLeft = d + 50;
+  if (!o.lob) b.rollLeft = o.through ? d : d + 50;
+  b.through = o.through ?? false;
   p.kickCd = 0.24;
   p.kickAnim = 0.25;
   p.faceTowards(tx, ty);

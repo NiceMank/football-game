@@ -1,6 +1,6 @@
 import { groundPassSpeed, groundTime, knockOn, passTo, shoot, slideTackle, tackle } from './actions';
-import { icpt, interceptTime, nearestOpponentDist } from './ai';
-import { CONTROL_DIST, CY, GOAL_HALF, PITCH_L, PITCH_W, PLAYER_R } from './constants';
+import { icpt, interceptTime, laneRisk, nearestOpponentDist } from './ai';
+import { CONTROL_DIST, CY, GOAL_HALF, GROUND_K, PASS_K, PITCH_L, PITCH_W, PLAYER_R, ROLL_DECEL } from './constants';
 import { clamp, dist, rand } from './math';
 import type { Match } from './match';
 import type { Player } from './player';
@@ -14,6 +14,12 @@ const TAP_SHOT = 0.14;
 const MAX_PASS_LEAD = 120;
 const SHOT_CHARGE_TIME = 0.85;
 const HUMAN_TACKLE = 0.6;
+/** X without the ball: beyond this distance from the ball it does nothing. */
+const LUNGE_RANGE = 115;
+const LUNGE_TIME = 0.42;
+/** Through ball: space played ahead of the runner (min / max). */
+const THROUGH_LEAD_MIN = 90;
+const THROUGH_LEAD_MAX = 170;
 
 /** Translates the input state into actions for the controlled player of the human team. */
 export class HumanController {
@@ -21,7 +27,7 @@ export class HumanController {
   shootHold = -1;
   charge = 0;
   chargeKind: 'shot' | 'pass' | null = null;
-  queued: 'pass' | 'shoot' | null = null;
+  queued: 'pass' | 'through' | 'shoot' | null = null;
   queuedTimer = 0;
   queuedPower = 0;
   aimX = 1;
@@ -36,10 +42,13 @@ export class HumanController {
   takingTimer = 0;
   /** A tackle pressed while the carrier is still taking his touch fires as soon as it can. */
   private tackleBuffer = 0;
+  /** Remaining time of a committed step-in toward the carrier (X from mid range). */
+  lunge = 0;
   private tapPass = TAP_PASS;
 
   reset() {
     this.tackleBuffer = 0;
+    this.lunge = 0;
     this.passHold = -1;
     this.shootHold = -1;
     this.charge = 0;
@@ -125,6 +134,12 @@ export class HumanController {
       p.steerDir(mx, my, mag, input.sprint);
       if (input.dashPressed) knockOn(m, p);
       this.updatePreview(p);
+      if (input.throughPressed) {
+        this.doThrough(m, p);
+        this.passHold = -1;
+        this.releaseHolds(input);
+        return;
+      }
       if (input.passReleased && this.passHold >= 0) {
         this.doPass(m, p, input.passSwipe, this.passHold);
         this.passHold = -1;
@@ -138,9 +153,28 @@ export class HumanController {
     this.previewTarget = null;
     this.previewPoint = null;
 
-    const defending = b.owner !== null && b.owner.team !== team;
+    const defending = b.owner !== null && b.owner.team !== team && !b.held;
     const receiving = b.free && b.passTarget === p;
-    if (receiving) {
+    if (!defending) {
+      this.tackleBuffer = 0;
+      this.lunge = 0;
+    } else if (input.passPressed && !p.busy && p.tackleCd <= 0) {
+      // X without the ball depends on distance: tackle when close, a short committed step-in from a
+      // little further, nothing from far away.
+      const db = dist(p.x, p.y, b.x, b.y);
+      if (db < PLAYER_R + 26) this.tackleBuffer = 0.3;
+      else if (db < LUNGE_RANGE) {
+        this.lunge = LUNGE_TIME;
+        this.tackleBuffer = LUNGE_TIME;
+      }
+    }
+    if (this.lunge > 0 && defending && b.owner) {
+      this.lunge -= dt;
+      const c = b.owner;
+      p.steerTo(b.x + c.vx * 0.12, b.y + c.vy * 0.12, 1, true, 4);
+      // Stepping in and not getting there leaves the defender briefly off balance.
+      if (this.lunge <= 0) p.stun = Math.max(p.stun, 0.2);
+    } else if (receiving) {
       // The ball is coming to this player: he goes to meet it even if the stick is still held from
       // the pass, otherwise he runs away from his own pass. Sprint is the player's choice, or
       // automatic when the meeting point is far.
@@ -157,14 +191,13 @@ export class HumanController {
     }
     if (input.dashPressed && mag > 0.2) p.sprint = true;
 
-    if (!defending) this.tackleBuffer = 0;
     if (defending) {
-      if (input.passPressed) this.tackleBuffer = 0.3;
       if (this.tackleBuffer > 0) {
         this.tackleBuffer -= dt;
         if (b.ownerLock <= 0 && dist(p.x, p.y, b.x, b.y) < PLAYER_R + 26) {
           tackle(m, p, HUMAN_TACKLE);
           this.tackleBuffer = 0;
+          this.lunge = 0;
         }
       }
       if (input.shootPressed) {
@@ -176,6 +209,10 @@ export class HumanController {
     } else if (b.free) {
       if (input.passPressed) {
         this.queued = 'pass';
+        this.queuedTimer = 0.55;
+      }
+      if (input.throughPressed) {
+        this.queued = 'through';
         this.queuedTimer = 0.55;
       }
       if (input.shootPressed) {
@@ -214,7 +251,8 @@ export class HumanController {
       return true;
     }
     b.owner = null;
-    this.doPass(m, p, null, 0);
+    if (q === 'through') this.doThrough(m, p);
+    else this.doPass(m, p, null, 0);
     return true;
   }
 
@@ -318,6 +356,83 @@ export class HumanController {
       return;
     }
     passTo(m, p, tx, ty, { lob: lofted, error: err, speed: swipe && !lofted ? 330 + power * 600 : undefined });
+  }
+
+  /**
+   * T: ground pass into the space ahead of a teammate further up the pitch. Prefers a runner going
+   * forward, with room in front of him and a lane few defenders can cut. The faster he runs forward,
+   * the more space it is played into. With nobody ahead, the ball goes into the space in front of
+   * the carrier. The landing spot always stays on the pitch.
+   */
+  doThrough(m: Match, p: Player) {
+    const team = p.team;
+    const dir = team.dir;
+    const mag = Math.hypot(this.moveX, this.moveY);
+    const directed = mag > 0.2;
+    let best: Player | null = null;
+    let bestS = -0.7;
+    let bx = 0;
+    let by = 0;
+    let bv = 0;
+    for (const t of team.players) {
+      if (t === p || t.isGK) continue;
+      const ahead = (t.x - p.x) * dir;
+      if (ahead < 15 || dist(p.x, p.y, t.x, t.y) > 700) continue;
+      const fwd = t.vx * dir;
+      let rx: number = dir;
+      let ry = clamp((CY - t.y) / 700, -0.35, 0.35);
+      if (fwd > 40) {
+        rx = t.vx;
+        ry = t.vy;
+      }
+      const rn = Math.hypot(rx, ry) || 1;
+      rx /= rn;
+      ry /= rn;
+      const runSpeed = Math.max(0, t.vx * rx + t.vy * ry);
+      let tx = t.x;
+      let ty = t.y;
+      let v0 = 0;
+      for (let i = 0; i < 2; i++) {
+        const d = dist(p.x, p.y, tx, ty);
+        v0 = throughSpeed(m.ball.x, m.ball.y, tx, ty);
+        const lead = clamp(runSpeed * groundTime(v0, d) * 0.9, THROUGH_LEAD_MIN, THROUGH_LEAD_MAX);
+        tx = clamp(t.x + rx * lead, 50, PITCH_L - 50);
+        ty = clamp(t.y + ry * lead, 35, PITCH_W - 35);
+      }
+      v0 = throughSpeed(m.ball.x, m.ball.y, tx, ty);
+      const d = dist(p.x, p.y, tx, ty);
+      const risk = laneRisk(team, p.x, p.y, tx, ty, v0, null);
+      const space = clamp(nearestOpponentDist(team, tx, ty) / 140, 0, 1);
+      let s = clamp(ahead / 300, 0, 1) * 0.8 + space * 1.2 - risk * 1.6 + clamp(fwd / 200, 0, 1) * 0.6;
+      if (d > 520) s -= (d - 520) / 300;
+      if (directed) {
+        const cos = ((tx - p.x) * this.moveX + (ty - p.y) * this.moveY) / (d * mag);
+        if (cos < 0.2) continue;
+        s += cos * 1.2;
+      }
+      if (s > bestS) {
+        bestS = s;
+        best = t;
+        bx = tx;
+        by = ty;
+        bv = v0;
+      }
+    }
+    const err = 0.028 * (1 + m.pressureOn(p) * 0.8);
+    if (best) {
+      m.humanTeam!.controlled = best;
+      passTo(m, p, bx, by, { target: best, error: err, speed: bv, through: true });
+      return;
+    }
+    let dx: number = dir;
+    let dy = 0;
+    if (directed && this.moveX * dir > -0.3) {
+      dx = this.moveX / mag;
+      dy = this.moveY / mag;
+    }
+    const tx = clamp(p.x + dx * 200, 50, PITCH_L - 50);
+    const ty = clamp(p.y + dy * 200, 35, PITCH_W - 35);
+    passTo(m, p, tx, ty, { error: err, speed: throughSpeed(m.ball.x, m.ball.y, tx, ty, 150), through: true });
   }
 
   /** Keeper with the ball in hand: PASS = throw to a teammate, long PASS / TIR = punt up the pitch. */
@@ -516,6 +631,21 @@ export function choosePassTarget(p: Player, dx: number, dy: number, minCos: numb
     }
   }
   return best;
+}
+
+/**
+ * Launch speed of a through ball to (tx, ty). It reaches its spot a little softer than a pass to
+ * feet so the runner can take it in stride, and near a line it arrives slowly enough to stop on the pitch.
+ */
+function throughSpeed(ax: number, ay: number, tx: number, ty: number, arrive?: number) {
+  const d = dist(ax, ay, tx, ty) || 1;
+  const ux = (tx - ax) / d;
+  const uy = (ty - ay) / d;
+  const roomX = ux > 0.01 ? (PITCH_L - tx) / ux : ux < -0.01 ? tx / -ux : 1e4;
+  const roomY = uy > 0.01 ? (PITCH_W - ty) / uy : uy < -0.01 ? ty / -uy : 1e4;
+  // Past its spot the ball rolls at most about v / GROUND_K further.
+  const va = Math.min(arrive ?? 200 + d * 0.18, Math.max(20, Math.min(roomX, roomY) - 15) * GROUND_K);
+  return clamp(va + d * PASS_K + (ROLL_DECEL * d) / 380, 50, 900);
 }
 
 /** Aim at the post the keeper is not covering. */
