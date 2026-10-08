@@ -10,6 +10,8 @@ import type { AimSwipe, InputState } from './types';
 const TAP_PASS = 0.22;
 const TAP_PASS_TOUCH = 0.4;
 const TAP_SHOT = 0.14;
+/** Largest lead given to a moving receiver (about 8 m). */
+const MAX_PASS_LEAD = 120;
 const SHOT_CHARGE_TIME = 0.85;
 const HUMAN_TACKLE = 0.6;
 
@@ -138,9 +140,12 @@ export class HumanController {
 
     const defending = b.owner !== null && b.owner.team !== team;
     const receiving = b.free && b.passTarget === p;
-    if (receiving && mag < 0.15) {
+    if (receiving) {
+      // The ball is coming to this player: he goes to meet it even if the stick is still held from
+      // the pass, otherwise he runs away from his own pass. Sprint is the player's choice, or
+      // automatic when the meeting point is far.
       interceptTime(p, m);
-      p.steerTo(icpt.x, icpt.y, 1, dist(p.x, p.y, icpt.x, icpt.y) > 80, 8);
+      p.steerTo(icpt.x, icpt.y, 1, input.sprint || dist(p.x, p.y, icpt.x, icpt.y) > 110, 8);
     } else if (defending && input.pass && mag < 0.15 && b.owner) {
       // Holding PASS while defending: assisted pressure on the carrier (goal-side jockey).
       const c = b.owner;
@@ -265,12 +270,26 @@ export class HumanController {
     const throwing = m.state === 'taking' && m.restart?.type === 'throwin';
     const err = 0.028 * (1 + m.pressureOn(p) * 0.8);
     if (target) {
-      const d0 = dist(p.x, p.y, target.x, target.y);
-      const v0 = swipe ? 330 + power * 600 : groundPassSpeed(d0);
-      const t = lofted ? clamp(d0 / 430, 0.6, 1.45) : groundTime(v0, d0);
+      // Meeting point: where the receiver will be when the ball gets there, with a capped lead so a
+      // running teammate can keep his stride without the ball being played far ahead of him.
       const runLead = target.intent === 'run' ? 1 : 0.6;
-      let tx = target.x + target.vx * t * runLead;
-      let ty = target.y + target.vy * t * runLead;
+      let tx = target.x;
+      let ty = target.y;
+      let v0 = 0;
+      for (let i = 0; i < 2; i++) {
+        const d = dist(p.x, p.y, tx, ty);
+        v0 = swipe ? 330 + power * 600 : groundPassSpeed(d);
+        const t = lofted ? clamp(d / 430, 0.6, 1.45) : groundTime(v0, d);
+        let lx = target.vx * t * runLead;
+        let ly = target.vy * t * runLead;
+        const ll = Math.hypot(lx, ly);
+        if (ll > MAX_PASS_LEAD) {
+          lx *= MAX_PASS_LEAD / ll;
+          ly *= MAX_PASS_LEAD / ll;
+        }
+        tx = target.x + lx;
+        ty = target.y + ly;
+      }
       if (lofted && !swipe) {
         // Through ball over the top: the longer the press, the further into space.
         tx += p.team.dir * power * 90;

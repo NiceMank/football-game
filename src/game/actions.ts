@@ -1,19 +1,24 @@
-import { BALL_R, CONTROL_DIST, CY, GRAVITY, GROUND_K, PITCH_L, PITCH_W, PLAYER_R, ROLL_DECEL } from './constants';
+import { BALL_R, CONTROL_DIST, CY, GRAVITY, PASS_K, PITCH_L, PITCH_W, PLAYER_R, ROLL_DECEL } from './constants';
 import { clamp, dist, gauss, rand } from './math';
 import type { Match } from './match';
 import type { Player } from './player';
 import type { KickKind } from './types';
 
 /** Initial speed so a ground pass covers `d` and still arrives with `arrive` speed. */
-export function groundPassSpeed(d: number, arrive = 190) {
-  return clamp(d * GROUND_K + arrive + ROLL_DECEL, 300, 960);
+/**
+ * Launch speed of a ground pass over d: the ball should still be travelling at `arrive` when it
+ * reaches the receiver. Short passes are soft, long ones firmer, and the arrival pace grows a little
+ * with distance so a long ball still reaches a teammate who has to step to it.
+ */
+export function groundPassSpeed(d: number, arrive = 250 + d * 0.22) {
+  return clamp(arrive + d * PASS_K + (ROLL_DECEL * d) / 380, 240, 900);
 }
 
-/** Seconds for a ground ball launched at v0 to travel d (Infinity if it stops short). */
+/** Seconds for a ground pass launched at v0 to travel d (4 if it would stop short). */
 export function groundTime(v0: number, d: number) {
-  const r = 1 - (d * GROUND_K) / v0;
+  const r = 1 - (d * PASS_K) / v0;
   if (r <= 0.02) return 4;
-  return -Math.log(r) / GROUND_K;
+  return -Math.log(r) / PASS_K;
 }
 
 export interface PassOptions {
@@ -52,6 +57,8 @@ export function passTo(m: Match, p: Player, tx: number, ty: number, o: PassOptio
   b.kick(p, vx, vy, vz, kind, o.target ?? null);
   b.passTargetX = tx;
   b.passTargetY = ty;
+  // A ground pass keeps its pace up to its destination (plus a little slack), then slows like a loose ball.
+  if (!o.lob) b.rollLeft = d + 50;
   p.kickCd = 0.24;
   p.kickAnim = 0.25;
   p.faceTowards(tx, ty);

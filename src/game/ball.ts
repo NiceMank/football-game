@@ -1,4 +1,4 @@
-import { AIR_K, BALL_R, CX, CY, GRAVITY, GROUND_K, ROLL_DECEL } from './constants';
+import { AIR_K, BALL_R, CX, CY, GRAVITY, GROUND_K, PASS_K, ROLL_DECEL } from './constants';
 import type { Player } from './player';
 import type { KickKind } from './types';
 
@@ -33,6 +33,8 @@ export class Ball {
   passTargetY = 0;
   shotPower = 0;
   shotId = 0;
+  /** Distance a ground pass still rolls with pass friction before it slows like a loose ball. */
+  rollLeft = 0;
   /** Short protection after winning the ball so possession cannot flip-flop every frame. */
   ownerLock = 0;
   /** The keeper that last touched a shot (used to award a save once). */
@@ -65,6 +67,7 @@ export class Ball {
     this.passTarget = null;
     this.savedBy = null;
     this.trailCount = 0;
+    this.rollLeft = 0;
   }
 
   kick(by: Player, vx: number, vy: number, vz: number, kind: KickKind, target: Player | null = null) {
@@ -82,6 +85,7 @@ export class Ball {
     this.passTarget = target;
     this.savedBy = null;
     this.trailCount = 0;
+    this.rollLeft = 0;
     if (kind === 'shot') this.shotId++;
   }
 
@@ -102,10 +106,11 @@ export class Ball {
       this.vx *= drag;
       this.vy *= drag;
     } else {
-      const f = Math.exp(-GROUND_K * dt);
+      const f = Math.exp(-this.groundK() * dt);
       this.vx *= f;
       this.vy *= f;
       const s = Math.hypot(this.vx, this.vy);
+      if (this.rollLeft > 0) this.rollLeft -= s * dt;
       if (s > 0) {
         const ns = Math.max(0, s - ROLL_DECEL * dt);
         if (ns < 4) {
@@ -172,26 +177,49 @@ export class Ball {
     if (this.trailCount < TRAIL_LEN) this.trailCount++;
   }
 
+  private groundK() {
+    return this.rollLeft > 0 ? PASS_K : GROUND_K;
+  }
+
+  /** Ground distance covered after t seconds: pass friction up to the destination, loose-ball friction after. */
+  private travel(t: number) {
+    const s = this.speed;
+    if (s < 1e-3) return 0;
+    if (this.z > 2) {
+      const k = AIR_K + 0.25;
+      return (s / k) * (1 - Math.exp(-k * t));
+    }
+    if (this.rollLeft <= 0) return (s / GROUND_K) * (1 - Math.exp(-GROUND_K * t));
+    const d1 = (s / PASS_K) * (1 - Math.exp(-PASS_K * t));
+    if (d1 <= this.rollLeft) return d1;
+    const v1 = s - PASS_K * this.rollLeft;
+    if (v1 <= 0) return this.rollLeft;
+    const t1 = -Math.log(v1 / s) / PASS_K;
+    return this.rollLeft + (v1 / GROUND_K) * (1 - Math.exp(-GROUND_K * (t - t1)));
+  }
+
   /** Approximate ground-plane position after t seconds (no player interaction). */
   predictX(t: number) {
     if (this.owner) return this.owner.x;
-    const k = this.z > 2 ? AIR_K + 0.25 : GROUND_K;
-    return this.x + (this.vx / k) * (1 - Math.exp(-k * t));
+    const s = this.speed;
+    return s < 1e-3 ? this.x : this.x + (this.vx / s) * this.travel(t);
   }
 
   predictY(t: number) {
     if (this.owner) return this.owner.y;
-    const k = this.z > 2 ? AIR_K + 0.25 : GROUND_K;
-    return this.y + (this.vy / k) * (1 - Math.exp(-k * t));
+    const s = this.speed;
+    return s < 1e-3 ? this.y : this.y + (this.vy / s) * this.travel(t);
   }
 
   /** Where a rolling ball would come to rest. */
   restX() {
-    return this.x + this.vx / GROUND_K;
+    const s = this.speed;
+    return s < 1e-3 ? this.x : this.x + (this.vx / s) * this.travel(30);
   }
 
   restY() {
-    return this.y + this.vy / GROUND_K;
+    const s = this.speed;
+    return s < 1e-3 ? this.y : this.y + (this.vy / s) * this.travel(30);
   }
 
   static readonly TRAIL_LEN = TRAIL_LEN;

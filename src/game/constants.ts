@@ -26,6 +26,8 @@ export const TILT = 0.74;
 export const GRAVITY = 760;
 
 export const GROUND_K = 1.05;
+/** Rolling friction of a pass until it reaches its destination; afterwards it slows like a loose ball (GROUND_K). */
+export const PASS_K = 0.5;
 export const ROLL_DECEL = 24;
 export const AIR_K = 0.16;
 
