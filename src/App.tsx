@@ -131,6 +131,8 @@ export default function App() {
   screenRef.current = screen;
   pausedRef.current = paused;
   finishedRef.current = finished;
+  const controlsRef = useRef(showControls);
+  controlsRef.current = showControls;
   const togglePauseRef = useRef(togglePause);
   const startRef = useRef(startMatch);
   togglePauseRef.current = togglePause;
@@ -138,7 +140,11 @@ export default function App() {
 
   useEffect(() => attachKeyboard(inputRef.current, {
     onPause: () => togglePauseRef.current(),
-    onRestart: () => startRef.current(),
+    onRestart: () => {
+      if (screenRef.current !== 'match' || controlsRef.current || !(pausedRef.current || finishedRef.current)) return false;
+      startRef.current();
+      return true;
+    },
     isActive: () => screenRef.current === 'match' && !pausedRef.current && !finishedRef.current,
     onActivity: () => unlockAudio(),
   }), []);

@@ -91,9 +91,10 @@ export class Player {
 
   maxSpeed(hasBall: boolean) {
     let s = RUN_SPEED * this.speedStat * this.boost;
-    if (this.sprint && this.stamina > 0.04) s *= SPRINT_MULT;
+    // A tiring player loses his sprint gradually, then some of his normal pace.
+    if (this.sprint) s *= 1 + (SPRINT_MULT - 1) * clamp((this.stamina - 0.04) / 0.36, 0, 1);
     if (hasBall) s *= DRIBBLE_MULT;
-    if (this.stamina < 0.2) s *= 0.86;
+    if (this.stamina < 0.25) s *= 0.86 + 0.56 * this.stamina;
     return s;
   }
 

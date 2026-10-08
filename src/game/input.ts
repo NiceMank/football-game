@@ -7,18 +7,21 @@ export const KEYS = {
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
   pass: ['KeyX'],
+  through: ['KeyT'],
   shoot: ['KeyC'],
+  sprint: ['KeyR', 'AltLeft', 'AltRight'],
   dash: ['AltLeft', 'AltRight'],
   switchPlayer: ['ShiftRight'],
   pause: ['Escape'],
-  restart: ['KeyR'],
 } as const;
 
 const GAME_CODES = new Set<string>(Object.values(KEYS).flat());
+const has = (codes: readonly string[], code: string) => codes.includes(code);
 
 export interface KeyboardHandlers {
   onPause: () => void;
-  onRestart: () => void;
+  /** Enter outside live play (pause, full time). Returns true when it restarted. */
+  onRestart: () => boolean;
   /** Return false to ignore gameplay keys (menus, pause). */
   isActive: () => boolean;
   onActivity?: () => void;
@@ -35,7 +38,7 @@ export function attachKeyboard(input: InputState, h: KeyboardHandlers) {
     const n = x !== 0 && y !== 0 ? Math.SQRT1_2 : 1;
     input.moveX = x * n;
     input.moveY = y * n;
-    input.sprint = any(KEYS.dash);
+    input.sprint = any(KEYS.sprint);
   };
 
   const down = (e: KeyboardEvent) => {
@@ -44,24 +47,25 @@ export function attachKeyboard(input: InputState, h: KeyboardHandlers) {
       if (!e.repeat) h.onPause();
       return;
     }
-    if (!h.isActive()) return;
-    if (e.repeat) return;
-    h.onActivity?.();
-    if (e.code === 'KeyR') {
-      h.onRestart();
+    if (!h.isActive()) {
+      if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !e.repeat && h.onRestart()) e.preventDefault();
       return;
     }
+    if (e.repeat) return;
+    h.onActivity?.();
     held.add(e.code);
     input.touch = false;
-    if ((KEYS.pass as readonly string[]).includes(e.code)) {
+    if (has(KEYS.pass, e.code)) {
       input.pass = true;
       input.passPressed = true;
-    } else if ((KEYS.shoot as readonly string[]).includes(e.code)) {
+    } else if (has(KEYS.through, e.code)) {
+      input.throughPressed = true;
+    } else if (has(KEYS.shoot, e.code)) {
       input.shoot = true;
       input.shootPressed = true;
-    } else if ((KEYS.dash as readonly string[]).includes(e.code)) {
+    } else if (has(KEYS.dash, e.code)) {
       input.dashPressed = true;
-    } else if (e.code === 'ShiftRight') {
+    } else if (has(KEYS.switchPlayer, e.code)) {
       input.switchPressed = true;
     }
     refresh();
@@ -70,10 +74,10 @@ export function attachKeyboard(input: InputState, h: KeyboardHandlers) {
   const up = (e: KeyboardEvent) => {
     if (GAME_CODES.has(e.code)) e.preventDefault();
     held.delete(e.code);
-    if ((KEYS.pass as readonly string[]).includes(e.code) && input.pass) {
+    if (has(KEYS.pass, e.code) && input.pass) {
       input.pass = false;
       input.passReleased = true;
-    } else if ((KEYS.shoot as readonly string[]).includes(e.code) && input.shoot) {
+    } else if (has(KEYS.shoot, e.code) && input.shoot) {
       input.shoot = false;
       input.shootReleased = true;
     }
