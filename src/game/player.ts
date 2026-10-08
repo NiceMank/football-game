@@ -190,7 +190,8 @@ export class Player {
       const a = Math.hypot(ax, ay);
       // Braking is quicker than accelerating; carrying the ball makes turns slightly heavier.
       const braking = desX * this.vx + desY * this.vy < 0 || Math.hypot(desX, desY) < this.speed;
-      const limit = ACCEL * (braking ? 1.35 : 1) * (hasBall ? 0.85 : 1) * dt;
+      // Sprint picks up quicker than a jog, so holding R feels like a burst rather than a slightly faster walk.
+      const limit = ACCEL * (braking ? 1.35 : this.sprint ? 1.22 : 1) * (hasBall ? 0.85 : 1) * dt;
       if (a > limit) {
         ax *= limit / a;
         ay *= limit / a;
@@ -200,7 +201,7 @@ export class Player {
     }
 
     const s = this.speed;
-    if (this.sprint && s > 120 && this.slide <= 0) this.stamina = Math.max(0, this.stamina - 0.17 * dt);
+    if (this.sprint && s > 120 && this.slide <= 0) this.stamina = Math.max(0, this.stamina - 0.13 * dt);
     else this.stamina = Math.min(1, this.stamina + (s < 60 ? 0.11 : 0.065) * dt);
 
     if (s > 22 && this.slide <= 0) {

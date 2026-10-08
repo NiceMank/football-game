@@ -48,7 +48,7 @@ export const AI_PROFILES: Record<Difficulty, AIProfile> = {
     keeper: { reaction: 0.25, reactionVar: 0.08, readError: 24, perception: 6.5, catchSkill: 0.56, handling: 0.5, errorChance: 0.065, positioning: 12, diveSpeed: 230 },
   },
   pro: {
-    decision: 0.55, offBall: 0.52, reaction: 0.36, press: 0.4, pressRange: 150, tackle: 0.34, foulRisk: 0.18,
+    decision: 0.52, offBall: 0.48, reaction: 0.32, press: 0.48, pressRange: 170, tackle: 0.37, foulRisk: 0.17,
     passError: 0.085, shotError: 36, noise: 0.28, positioning: 0.56, anticipation: 0.38, vision: 0.46,
     keeper: { reaction: 0.22, reactionVar: 0.06, readError: 19, perception: 8, catchSkill: 0.63, handling: 0.6, errorChance: 0.045, positioning: 8, diveSpeed: 245 },
   },

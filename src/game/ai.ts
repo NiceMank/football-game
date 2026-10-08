@@ -225,6 +225,13 @@ function updatePlayerAI(p: Player, team: Team, m: Match, dt: number) {
   }
   if (b.free && b.passTarget === p) {
     p.intent = 'receive';
+    if (b.through) {
+      // Sprint onto the ball: a step past the meeting point, along its travel, so he takes it in stride.
+      interceptTime(p, m);
+      const s = b.speed || 1;
+      p.steerTo(icpt.x + (b.vx / s) * 26, icpt.y + (b.vy / s) * 26, 1, true, 18);
+      return;
+    }
     interceptTime(p, m);
     const tgtX = b.kind === 'cross' ? b.passTargetX : icpt.x;
     const tgtY = b.kind === 'cross' ? b.passTargetY : icpt.y;
@@ -259,6 +266,10 @@ function updatePlayerAI(p: Player, team: Team, m: Match, dt: number) {
 
   const owner = b.owner;
   const attacking = owner ? owner.team === team : m.lastPossession === team && b.passTarget?.team === team;
+  if (owner && owner.team !== team && team.human && !m.demo && m.human.wantsHelp(p)) {
+    calledPress(p, owner, team, m, dt);
+    return;
+  }
   if (owner && owner.team !== team) {
     if (b.held) {
       shapePosition(p, team, m.ball.x, m.ball.y, false);
@@ -344,6 +355,41 @@ export function shapePosition(p: Player, team: Team, bx: number, by: number, att
 
 /* --------------------------- Defending ---------------------------- */
 
+/** Teammate called in by the human (C): press the carrier from the other shoulder. No teleport. */
+function calledPress(p: Player, c: Player, team: Team, m: Match, dt: number) {
+  const you = team.controlled;
+  const gx = team.ownGoalX;
+  const toGoalX = gx - c.x;
+  const toGoalY = CY - c.y;
+  const dg = Math.hypot(toGoalX, toGoalY) || 1;
+  const ux = toGoalX / dg;
+  const uy = toGoalY / dg;
+  let sx = 0;
+  let sy = 1;
+  if (you && you !== p) {
+    const vx = you.x - c.x;
+    const vy = you.y - c.y;
+    const l = Math.hypot(vx, vy) || 1;
+    sx = -vy / l;
+    sy = vx / l;
+    if ((p.x - c.x) * sx + (p.y - c.y) * sy < 0) {
+      sx = -sx;
+      sy = -sy;
+    }
+  }
+  const tx = c.x + ux * 32 + sx * 28 + c.vx * 0.12;
+  const ty = c.y + uy * 24 + sy * 28 + c.vy * 0.12;
+  p.intent = 'press';
+  const d = dist(p.x, p.y, c.x, c.y);
+  p.steerTo(tx, ty, 1, d > 48 && p.stamina > 0.12, 12);
+  p.tackleThink -= dt;
+  if (p.tackleThink > 0) return;
+  p.tackleThink = 0.28;
+  const b = m.ball;
+  if (dist(p.x, p.y, b.x, b.y) > PLAYER_R + 18 || p.tackleCd > 0 || b.ownerLock > 0) return;
+  if (Math.random() < 0.42) tackle(m, p, 0.4);
+}
+
 function pressAI(p: Player, c: Player, team: Team, m: Match, dt: number) {
   const prof = team.profile;
   const b = m.ball;
@@ -371,7 +417,7 @@ function pressAI(p: Player, c: Player, team: Team, m: Match, dt: number) {
   const d = dist(p.x, p.y, c.x, c.y);
   const counterPress = m.time - team.lostAt < 1.5;
   const danger = team.local(c.x) < 0.42;
-  const engage = counterPress || danger || d < prof.pressRange * (0.6 + prof.press * 0.6);
+  const engage = counterPress || danger || d < prof.pressRange * (0.78 + prof.press * 0.5);
   p.intent = 'press';
   if (!engage) {
     // Hold the zone in front of the carrier instead of diving in.
@@ -411,7 +457,7 @@ function pressAI(p: Player, c: Player, team: Team, m: Match, dt: number) {
     arrive = 8;
   } else {
     // Jockey: a real gap that grows with the carrier's pace, shifted to where he is heading.
-    const hold = 46 + Math.min(34, cSpeed * 0.12);
+    const hold = 38 + Math.min(24, cSpeed * 0.09);
     tx = cx + ux * hold + p.readVx * 0.3;
     ty = cy + uy * hold + p.readVy * 0.3;
     sprint = d > hold + 50 && p.stamina > 0.25;
@@ -458,9 +504,19 @@ function coverAI(p: Player, c: Player, team: Team, m: Match) {
   const toGoalY = CY - pr.y;
   const dg = Math.hypot(toGoalX, toGoalY) || 1;
   p.intent = 'cover';
-  const tx = pr.x + (toGoalX / dg) * 85;
-  const ty = pr.y + (toGoalY / dg) * 85 + (CY - pr.y) * 0.15;
-  p.steerTo(tx + p.noiseX * 0.5, ty + p.noiseY * 0.5, 1, dist(p.x, p.y, tx, ty) > 140);
+  let tx = pr.x + (toGoalX / dg) * 78;
+  let ty = pr.y + (toGoalY / dg) * 72 + (CY - pr.y) * 0.12;
+  // If an attacker is running in behind, the cover sits in that passing lane instead of stacking behind the presser.
+  const runner = team.opp.runner;
+  if (runner && runner.runTimer > 0.2 && runner !== c) {
+    tx = c.x + (runner.x - c.x) * 0.55;
+    ty = c.y + (runner.y - c.y) * 0.55;
+    if (team.local(tx) > team.local(c.x) - 0.005) {
+      tx = c.x + (toGoalX / dg) * 46;
+      ty = c.y + (toGoalY / dg) * 36;
+    }
+  }
+  p.steerTo(tx + p.noiseX * 0.5, ty + p.noiseY * 0.5, 1, dist(p.x, p.y, tx, ty) > 120);
   // Second defender steps in when the carrier has beaten the presser.
   if (team.local(c.x) < team.local(pr.x) - 0.02 && dist(p.x, p.y, c.x, c.y) < 95) {
     team.presser = p;

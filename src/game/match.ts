@@ -574,11 +574,18 @@ export class Match {
       if (p.stun > 0 && p.slide <= 0) continue;
       if (p.slide > 0) continue;
       if (b.kicker === p && p.kickCd > 0) continue;
+      // A teammate standing on the path does not kill a through ball in the first moments.
+      // The runner himself is meant to take it as it arrives.
+      if (b.through && b.passTarget && p !== b.passTarget && b.kicker !== null && b.kicker.team === p.team && b.speed > 180 && b.kickAge < 0.45 && b.z < 22) {
+        continue;
+      }
       const reach = CONTROL_DIST + (b.passTarget === p ? 5 : 0);
       const d = dist(p.x, p.y, b.x, b.y);
       if (d > reach || b.z > PLAYER_H + 6) continue;
       // A moving ball can only be met from in front: once it is past a player he has to chase it.
-      if (bs > 150 && ((p.x - b.x) * b.vx + (p.y - b.y) * b.vy) / bs < -3) continue;
+      // The runner of a through ball is the exception: he takes it as he arrives on the pocket, from behind.
+      const ontoThrough = b.through && b.passTarget === p && dist(b.x, b.y, b.passTargetX, b.passTargetY) < 80;
+      if (bs > 150 && ((p.x - b.x) * b.vx + (p.y - b.y) * b.vy) / bs < -3 && !ontoThrough) continue;
       if (d < bestD) {
         bestD = d;
         best = p;

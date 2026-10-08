@@ -60,11 +60,9 @@ export interface ThroughDose {
 }
 
 /**
- * Weight of a through ball. The spot is a short way in front of the runner — about the ground he
- * covers in the next half-second — and the ball is struck to arrive there slower than he is running,
- * so he runs onto it. A ball aimed at the spot he will reach in two seconds has to be hit so hard
- * that it catches him up from behind while it is still flying. `maxLead` is the open grass in front
- * (a defender in the channel, or the goal line, cuts it short).
+ * Weight of a through ball. The spot is a short way in front of the runner and the ball is struck
+ * so that, as it draws level with him, it is still rolling at roughly his pace. He runs onto it.
+ * `maxLead` is the open grass in front (a defender in the channel, or the goal line, cuts it short).
  */
 export function throughDose(
   ax: number, ay: number,
@@ -78,16 +76,20 @@ export function throughDose(
   const dx = dirX / n;
   const dy = dirY / n;
   const vmax = clamp(pace, 150, 320);
-  const cap = clamp(maxLead, 50, 240);
+  const cap = clamp(maxLead, 48, 170);
   const moving = Math.max(0, curSpeed);
-  // Already at speed: a bit more grass. Just starting the run: less, or the ball arrives before he does.
-  const horizon = moving > 120 ? 0.62 : 0.48;
-  const lead = clamp(distanceCovered(horizon, moving, vmax, ACCEL * 0.85), 65, cap);
+  // A short pocket in front of the run. Anything much further has to be struck so hard, from a
+  // passer behind the runner, that it arrives like a shot — or the runner gets there and waits.
+  const horizon = moving > 140 ? 0.46 : 0.36;
+  const lead = clamp(distanceCovered(horizon, moving, vmax, ACCEL * 0.75), 52, cap);
   const x = clamp(rx + dx * lead, 50, PITCH_L - 50);
   const y = clamp(ry + dy * lead, 36, PITCH_W - 36);
   const d = Math.hypot(x - ax, y - ay) || 1;
-  const want = clamp(vmax * (moving > 120 ? 0.58 : 0.5), 100, 185);
-  const speed = launchForArrival(d, cappedArrival(ax, ay, x, y, want));
+  // Friction drops speed linearly with distance, so the pace as the ball draws level with the
+  // runner is `arrive + PASS_K * lead`. That is the pace he takes it at.
+  const wantAtFeet = clamp(125 + moving * 0.18, 120, 195);
+  const arrive = clamp(wantAtFeet - PASS_K * lead, 36, 150);
+  const speed = launchForArrival(d, cappedArrival(ax, ay, x, y, arrive));
   return { x, y, speed, lead };
 }
 

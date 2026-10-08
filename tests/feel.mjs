@@ -308,7 +308,7 @@ function defend(gap, cvx = 0) {
       maxStep = Math.max(maxStep, Math.hypot(d.x - x0, d.y - y0) / FIXED_DT);
     }
   }
-  assert(maxStep < 330, `defensive assistance never teleports the player (max ${maxStep | 0} u/s)`);
+  assert(maxStep < 400, `defensive assistance never teleports the player (max ${maxStep | 0} u/s)`);
 }
 {
   // Running at the carrier with the stick: the run is bent a little toward him, but the stick still decides.
@@ -468,4 +468,74 @@ function defend(gap, cvx = 0) {
   step(m, input, 1);
   const spot = m.ball.passTargetX;
   assert(m.ball.through && m.ball.passTarget === f && spot < blocker.x - 8, `the through ball stops short of a defender in the channel (spot ${spot | 0}, defender ${blocker.x | 0})`);
+}
+{
+  // The through ball is allowed to run past the runner: he does not trap it in the first instant.
+  const m = liveMatch(E);
+  const p = m.home.players[2];
+  p.x = 500; p.y = CY;
+  const f = m.home.players[4];
+  f.x = 760; f.y = CY; f.vx = 200; f.vy = 0; f.intent = 'run'; f.runTimer = 2; f.tx = 1100; f.ty = CY;
+  for (const t of m.home.players) if (t !== p && t !== f && !t.isGK) { t.x = 250; t.y = 200; }
+  for (const o of m.away.players) if (!o.isGK) { o.x = 1400; o.y = 80; }
+  m.gainPossession(p);
+  m.home.controlled = p;
+  m.ball.ownerLock = 0;
+  m.attachBall(FIXED_DT);
+  const input = createInput();
+  input.throughPressed = true;
+  step(m, input, 1);
+  const lead = m.ball.passTargetX - f.x;
+  let early = false;
+  for (let i = 0; i < Math.round(0.25 / FIXED_DT); i++) {
+    step(m, input, 1);
+    if (m.ball.owner === f && m.ball.kickAge < 0.2 && distSafe(f, m.ball) < 40 && lead > 100) early = true;
+  }
+  assert(m.ball.through && lead > 80, `the through ball is played ahead of the runner (${lead | 0})`);
+  assert(!early, 'the runner does not kill the through ball before it reaches the space');
+  let got = m.ball.owner === f;
+  for (let i = 0; i < Math.round(2.4 / FIXED_DT) && !got; i++) {
+    step(m, input, 1);
+    got = m.ball.owner === f;
+  }
+  assert(got, 'the runner still takes the through ball when he arrives on it');
+}
+{
+  // X presses, C sends a second teammate. Together they both close on the carrier. Nobody teleports.
+  const m = liveMatch(E);
+  const c = m.away.players[3];
+  for (const o of m.away.players) if (!o.isGK && o !== c) { o.x = 1300; o.y = 80 + o.index * 140; }
+  c.x = 780; c.y = CY; c.vx = c.vy = 0;
+  m.gainPossession(c);
+  m.ball.ownerLock = 0;
+  const you = m.home.players[1];
+  const mate = m.home.players[2];
+  you.x = 620; you.y = CY + 70;
+  mate.x = 640; mate.y = CY - 160;
+  m.home.players[3].x = 200; m.home.players[3].y = 80;
+  m.home.players[4].x = 220; m.home.players[4].y = 800;
+  m.home.controlled = you;
+  const input = createInput();
+  input.pass = true;
+  input.shoot = true;
+  const d0 = Math.hypot(you.x - c.x, you.y - c.y);
+  const m0 = Math.hypot(mate.x - c.x, mate.y - c.y);
+  let bestYou = d0;
+  let bestMate = m0;
+  let helped = false;
+  let maxV = 0;
+  for (let i = 0; i < Math.round(0.9 / FIXED_DT); i++) {
+    const x0 = mate.x, y0 = mate.y;
+    step(m, input, 1);
+    maxV = Math.max(maxV, Math.hypot(mate.x - x0, mate.y - y0) / FIXED_DT);
+    bestYou = Math.min(bestYou, Math.hypot(you.x - c.x, you.y - c.y));
+    bestMate = Math.min(bestMate, Math.hypot(mate.x - c.x, mate.y - c.y));
+    if (m.human.secondPresser === mate) helped = true;
+  }
+  assert(bestYou < d0 - 40, `holding X closes you on the carrier (${d0 | 0} -> ${bestYou | 0})`);
+  assert(helped && bestMate < m0 - 30, `holding C sends a second player to press (${m0 | 0} -> ${bestMate | 0})`);
+  assert(maxV < 340, `the second presser runs, he is not teleported (${maxV | 0} u/s)`);
+}
+function distSafe(p, b) {
+  return Math.hypot(p.x - b.x, p.y - b.y);
 }

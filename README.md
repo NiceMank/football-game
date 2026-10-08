@@ -18,10 +18,10 @@ npm test         # tests du moteur (Node + esbuild)
 | Touche | Action |
 | --- | --- |
 | `WASD` / flèches (`ZQSD` sur AZERTY) | déplacement |
-| `X` | passe (tap = passe intelligente, maintenir = passe lobée) · en défense : tacle si le ballon est tout près, intervention courte un peu plus loin, rien de trop loin ; maintenir sans direction = pressing |
-| `T` | passe en profondeur dans la course d'un coéquipier placé devant (la direction choisit le côté) ; personne devant = ballon dans l'espace devant soi |
-| `C` | tir (tap = tir placé, maintenir = tir chargé, haut/bas = viser un poteau) · en défense : tacle glissé · sur corner : centre |
-| `R` | sprint (maintenir), avec ou sans ballon ; l'endurance baisse puis remonte progressivement |
+| `X` | passe (tap = passe intelligente, maintenir = passe lobée) · en défense : maintenir = presser le porteur (le stick choisit le côté), tacle si le ballon est tout près, intervention courte un peu plus loin |
+| `T` | passe en profondeur dans la course d'un coéquipier : le ballon passe devant lui et il sprinte dessus ; la direction choisit le côté ; personne devant = ballon dans l'espace devant soi |
+| `C` | tir (tap = tir placé, maintenir = tir chargé, haut/bas = viser un poteau) · en défense : maintenir = un coéquipier presse avec toi (X + C = pressing à deux) ; tout près = tacle glissé · sur corner : centre |
+| `R` | sprint (maintenir), plus franc qu'une course, avec ou sans ballon ; l'endurance baisse puis remonte progressivement |
 | `Alt` | crochet (pousse le ballon devant) · sprint aussi |
 | `Shift droit` | changer de joueur (appuis répétés = joueur suivant) |
 | `Échap` | pause |
@@ -31,7 +31,8 @@ npm test         # tests du moteur (Node + esbuild)
 
 - **Joystick analogique** flottant à gauche (zone morte, retour visuel).
 - **PASSE** : tap = passe auto intelligente ; glisser = passe orientée, la longueur du glissé règle la puissance.
-- **TIR** : tap = tir contrôlé ; maintenir = charge ; glisser = visée (premier poteau, centre, second poteau) et puissance.
+- **TIR** : tap = tir contrôlé ; maintenir = charge ; glisser = visée (premier poteau, centre, second poteau) et puissance. En défense, maintenir appelle un deuxième presseur (avec PASSE = pressing à deux) ; tout près du ballon, c'est un tacle glissé.
+- **PASSE** en défense : maintenir = presser le porteur.
 - **PROF.** : passe en profondeur (le joystick choisit le côté).
 - **SPRINT** : maintenir pour accélérer (consomme l'endurance).
 - **SWITCH** : joueur le mieux placé.
