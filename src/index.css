@@ -16,23 +16,23 @@ html,
 body {
   overscroll-behavior: none;
   overflow: hidden;
-  background: #0b1220;
-}
-
-.game-frame {
-  width: min(100vw, 66.6667vh);
-  height: min(100vh, 150vw);
-  aspect-ratio: 2 / 3;
-  flex: none;
-}
-
-@supports (height: 100dvh) {
-  .game-frame {
-    width: min(100vw, 66.6667dvh);
-    height: min(100dvh, 150vw);
-  }
+  background: #020617;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 button {
   -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+@keyframes rotate-phone {
+  0%, 15% { transform: rotate(0deg); }
+  45%, 70% { transform: rotate(-90deg); }
+  100% { transform: rotate(0deg); }
+}
+
+.rotate-phone {
+  animation: rotate-phone 2.4s ease-in-out infinite;
 }
