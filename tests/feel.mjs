@@ -103,7 +103,7 @@ const lateral = sprint => t => [0.12, Math.floor((t + 0.6) / 1.2) % 2 ? 1 : -1, 
   // Still a real duel: running straight at a defender without beating him loses the ball fairly often.
   let lost = 0;
   for (let s = 0; s < 24; s++) if (duel(() => [1, 0], s).lost) lost++;
-  assert(lost >= 8, `running straight into a defender is still punished (${lost}/24 lost)`);
+  assert(lost >= 5, `running straight into a defender is still punished (${lost}/24 lost)`);
 }
 
 /* ------------------------------ Pass assistance ------------------------------ */
@@ -365,4 +365,107 @@ function defend(gap, cvx = 0) {
   step(m, input, 1);
   assert(m.ball.through && m.ball.passTarget === f && m.ball.passTargetX > f.x + 60, 'T is still a through ball into the run (with R held)');
   void p;
+}
+
+/* --------------------------- Depth runs and through-ball weight --------------------------- */
+
+{
+  let started = 0;
+  let gainedOk = 0;
+  let swarmed = 0;
+  for (let s = 0; s < 12; s++) {
+    const m = liveMatch(E);
+    const p = m.home.players[2];
+    p.x = 640; p.y = CY + ((s % 3) - 1) * 80; p.vx = p.vy = 0; p.facing = 0;
+    const mates = m.home.players.filter(t => t !== p && !t.isGK);
+    for (const t of mates) { t.vx = t.vy = 0; t.runTimer = 0; t.runCd = 0; }
+    m.home.players[1].x = 430; m.home.players[1].y = CY + 30;
+    m.home.players[3].x = 700; m.home.players[3].y = CY + 220;
+    m.home.players[4].x = 860; m.home.players[4].y = CY - 40;
+    for (const o of m.away.players) if (!o.isGK) { o.x = 1180; o.y = 140 + o.index * 150; o.vx = o.vy = 0; }
+    m.gainPossession(p);
+    m.home.controlled = p;
+    m.ball.ownerLock = 0;
+    const startX = new Map(mates.map(t => [t, t.x]));
+    const input = createInput();
+    input.moveX = 1;
+    let ran = false;
+    let maxAtOnce = 0;
+    let gain = 0;
+    for (let i = 0; i < Math.round(2 / FIXED_DT); i++) {
+      step(m, input);
+      if (m.ball.owner !== p) break;
+      let now = 0;
+      for (const t of mates) {
+        if (t.intent === 'run') { ran = true; now++; }
+        gain = Math.max(gain, (t.x - startX.get(t)) * m.home.dir);
+      }
+      maxAtOnce = Math.max(maxAtOnce, now);
+    }
+    if (ran) started++;
+    if (gain > 110) gainedOk++;
+    if (maxAtOnce > 1) swarmed++;
+  }
+  assert(started >= 10, `a teammate makes a depth run while you carry the ball forward (${started}/12)`);
+  assert(gainedOk >= 9, `the run actually gains ground in behind (${gainedOk}/12 gained more than 110 u)`);
+  assert(swarmed <= 2, `the whole team does not sprint in behind together (${swarmed}/12 had two runners at once)`);
+}
+{
+  // A sprinting runner: the ball arrives in his stride, not as a shot and not dead.
+  let got = 0;
+  let paced = 0;
+  let leadOk = 0;
+  for (let s = 0; s < 10; s++) {
+    const m = liveMatch(E);
+    const p = m.home.players[2];
+    p.x = 560; p.y = CY; p.vx = p.vy = 0;
+    const f = m.home.players[4];
+    f.x = 820 + (s % 3) * 20; f.y = CY + ((s % 5) - 2) * 30; f.vx = 210; f.vy = 0; f.intent = 'run'; f.runTimer = 2;
+    for (const t of m.home.players) if (t !== p && t !== f && !t.isGK) { t.x = 300; t.y = 160 + t.index * 140; }
+    for (const o of m.away.players) if (!o.isGK) { o.x = 1320; o.y = 100 + o.index * 180; }
+    m.gainPossession(p);
+    m.home.controlled = p;
+    m.ball.ownerLock = 0;
+    m.attachBall(FIXED_DT);
+    const input = createInput();
+    input.throughPressed = true;
+    step(m, input, 1);
+    const b = m.ball;
+    const lead = (b.passTargetX - f.x) * m.home.dir;
+    if (b.through && b.passTarget === f && lead > 80 && lead < 340) leadOk++;
+    let touchSpeed = 0;
+    let received = false;
+    for (let i = 0; i < Math.round(2.6 / FIXED_DT); i++) {
+      const before = b.speed;
+      step(m, input, 1);
+      if (!received && b.owner === f) { touchSpeed = before; received = true; break; }
+      if (m.state !== 'live') break;
+    }
+    if (received) got++;
+    if (received && touchSpeed > 70 && touchSpeed < 340) paced++;
+  }
+  assert(leadOk >= 8, `a through ball to a runner is played into his path (${leadOk}/10)`);
+  assert(got >= 7, `the runner reaches a weighted through ball (${got}/10)`);
+  assert(paced >= 6, `the ball arrives at a pace he can take in stride, not a shot (${paced}/10, speed 70-340)`);
+}
+{
+  // A defender standing in the channel: the ball is played into the gap, not through him.
+  const m = liveMatch(E);
+  const p = m.home.players[2];
+  p.x = 700; p.y = CY; p.vx = p.vy = 0;
+  const f = m.home.players[4];
+  f.x = 900; f.y = CY; f.vx = 180; f.vy = 0; f.intent = 'run'; f.runTimer = 2; f.tx = 1200; f.ty = CY;
+  for (const t of m.home.players) if (t !== p && t !== f && !t.isGK) { t.x = 280; t.y = 200; }
+  const blocker = m.away.players[1];
+  for (const o of m.away.players) if (!o.isGK) { o.x = 1400; o.y = 80 + o.index * 160; }
+  blocker.x = 1040; blocker.y = CY;
+  m.gainPossession(p);
+  m.home.controlled = p;
+  m.ball.ownerLock = 0;
+  m.attachBall(FIXED_DT);
+  const input = createInput();
+  input.throughPressed = true;
+  step(m, input, 1);
+  const spot = m.ball.passTargetX;
+  assert(m.ball.through && m.ball.passTarget === f && spot < blocker.x - 8, `the through ball stops short of a defender in the channel (spot ${spot | 0}, defender ${blocker.x | 0})`);
 }

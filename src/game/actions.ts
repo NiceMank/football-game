@@ -1,4 +1,4 @@
-import { BALL_R, CONTROL_DIST, CY, GRAVITY, PASS_K, PITCH_L, PITCH_W, PLAYER_R, ROLL_DECEL } from './constants';
+import { ACCEL, BALL_R, CONTROL_DIST, CY, GRAVITY, GROUND_K, PASS_K, PITCH_L, PITCH_W, PLAYER_R, ROLL_DECEL } from './constants';
 import { clamp, dist, gauss, rand } from './math';
 import type { Match } from './match';
 import type { Player } from './player';
@@ -18,6 +18,97 @@ export function groundTime(v0: number, d: number) {
   const r = 1 - (d * PASS_K) / v0;
   if (r <= 0.02) return 4;
   return -Math.log(r) / PASS_K;
+}
+
+/** Ground covered in `t` seconds while accelerating from `v0` up to `vmax`. */
+export function distanceCovered(t: number, v0: number, vmax: number, accel = ACCEL) {
+  if (t <= 0) return 0;
+  const v = clamp(v0, 0, vmax);
+  const a = Math.max(1, accel);
+  if (v >= vmax - 1) return vmax * t;
+  const tAcc = (vmax - v) / a;
+  if (t <= tAcc) return v * t + 0.5 * a * t * t;
+  const dAcc = v * tAcc + 0.5 * a * tAcc * tAcc;
+  return dAcc + vmax * (t - tAcc);
+}
+
+/** Launch speed whose arrival pace at `d` is about `arrive`, under pass friction plus the roll drag. */
+function launchForArrival(d: number, arrive: number) {
+  const v = arrive + d * PASS_K + (ROLL_DECEL * d) / 400;
+  // A pass into a tiny pocket near the line must be allowed to leave slowly. A normal one never hits this floor.
+  return clamp(v, Math.min(70, arrive + 12), 780);
+}
+
+/**
+ * Arrival pace that still dies on the pitch: past the spot the ball rolls about `va / GROUND_K` further.
+ */
+function cappedArrival(ax: number, ay: number, tx: number, ty: number, want: number) {
+  const d = Math.hypot(tx - ax, ty - ay) || 1;
+  const ux = (tx - ax) / d;
+  const uy = (ty - ay) / d;
+  const roomX = ux > 0.02 ? (PITCH_L - tx) / ux : ux < -0.02 ? tx / -ux : 500;
+  const roomY = uy > 0.02 ? (PITCH_W - ty) / uy : uy < -0.02 ? ty / -uy : 500;
+  const room = Math.max(12, Math.min(roomX, roomY) - 16);
+  return clamp(Math.min(want, room * GROUND_K * 0.62), 16, 220);
+}
+
+export interface ThroughDose {
+  x: number;
+  y: number;
+  speed: number;
+  lead: number;
+}
+
+/**
+ * Weight of a through ball. The spot is a short way in front of the runner — about the ground he
+ * covers in the next half-second — and the ball is struck to arrive there slower than he is running,
+ * so he runs onto it. A ball aimed at the spot he will reach in two seconds has to be hit so hard
+ * that it catches him up from behind while it is still flying. `maxLead` is the open grass in front
+ * (a defender in the channel, or the goal line, cuts it short).
+ */
+export function throughDose(
+  ax: number, ay: number,
+  rx: number, ry: number,
+  dirX: number, dirY: number,
+  curSpeed: number,
+  pace: number,
+  maxLead: number,
+): ThroughDose {
+  const n = Math.hypot(dirX, dirY) || 1;
+  const dx = dirX / n;
+  const dy = dirY / n;
+  const vmax = clamp(pace, 150, 320);
+  const cap = clamp(maxLead, 50, 240);
+  const moving = Math.max(0, curSpeed);
+  // Already at speed: a bit more grass. Just starting the run: less, or the ball arrives before he does.
+  const horizon = moving > 120 ? 0.62 : 0.48;
+  const lead = clamp(distanceCovered(horizon, moving, vmax, ACCEL * 0.85), 65, cap);
+  const x = clamp(rx + dx * lead, 50, PITCH_L - 50);
+  const y = clamp(ry + dy * lead, 36, PITCH_W - 36);
+  const d = Math.hypot(x - ax, y - ay) || 1;
+  const want = clamp(vmax * (moving > 120 ? 0.58 : 0.5), 100, 185);
+  const speed = launchForArrival(d, cappedArrival(ax, ay, x, y, want));
+  return { x, y, speed, lead };
+}
+
+/**
+ * Open grass in front of (x, y) along a unit direction, cut by the goal line and by any opponent
+ * standing in the channel. The through ball is played into this pocket, not through a defender.
+ */
+export function channelSpace(team: { opp: { players: { isGK: boolean; x: number; y: number }[] }; dir: number }, x: number, y: number, dirX: number, dirY: number) {
+  const n = Math.hypot(dirX, dirY) || 1;
+  const dx = dirX / n;
+  const dy = dirY / n;
+  const goalRoom = dx * team.dir > 0.2 ? (team.dir > 0 ? PITCH_L - 90 - x : x - 90) : 260;
+  let space = clamp(goalRoom, 50, 340);
+  for (const o of team.opp.players) {
+    if (o.isGK) continue;
+    const along = (o.x - x) * dx + (o.y - y) * dy;
+    if (along < 24) continue;
+    const lat = Math.abs((o.x - x) * -dy + (o.y - y) * dx);
+    if (lat < 70) space = Math.min(space, along - 30);
+  }
+  return clamp(space, 50, 340);
 }
 
 export interface PassOptions {

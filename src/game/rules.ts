@@ -215,6 +215,7 @@ export function awardRestart(m: Match, type: RestartType, team: Team, x: number,
     p.slide = 0;
     p.stun = 0;
     p.runTimer = 0;
+    p.runCd = 0;
     p.gk?.reset();
   }
   if (type === 'penalty') {

@@ -52,6 +52,8 @@ export class Player {
   ty = 0;
   tSprint = false;
   runTimer = 0;
+  /** Pause after a depth run before the same player goes again. */
+  runCd = 0;
   noiseX = 0;
   noiseY = 0;
   markTarget: Player | null = null;

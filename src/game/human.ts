@@ -1,6 +1,6 @@
-import { groundPassSpeed, groundTime, knockOn, passTo, shoot, slideTackle, tackle } from './actions';
+import { channelSpace, groundPassSpeed, groundTime, knockOn, passTo, shoot, slideTackle, tackle, throughDose } from './actions';
 import { icpt, interceptTime, laneRisk, nearestOpponentDist } from './ai';
-import { CONTROL_DIST, CY, GOAL_HALF, GROUND_K, PASS_K, PITCH_L, PITCH_W, ROLL_DECEL } from './constants';
+import { CONTROL_DIST, CY, GOAL_HALF, PITCH_L, PITCH_W, RUN_SPEED, SPRINT_MULT } from './constants';
 import { ASSIST, approachBlend, humanTackle, lungeRange, passConeCos, passErrorMul, passRescueDist, shotErrorMul, shotPostInset, shotWindow, tackleReach } from './assist';
 import { angleDiff, clamp, dist, rand } from './math';
 import type { Match } from './match';
@@ -15,9 +15,6 @@ const TAP_SHOT = 0.14;
 const MAX_PASS_LEAD = 120;
 const SHOT_CHARGE_TIME = 0.85;
 const LUNGE_TIME = 0.42;
-/** Through ball: space played ahead of the runner (min / max). */
-const THROUGH_LEAD_MIN = 90;
-const THROUGH_LEAD_MAX = 170;
 
 /** Translates the input state into actions for the controlled player of the human team. */
 export class HumanController {
@@ -386,10 +383,10 @@ export class HumanController {
   }
 
   /**
-   * T: ground pass into the space ahead of a teammate further up the pitch. Prefers a runner going
-   * forward, with room in front of him and a lane few defenders can cut. The faster he runs forward,
-   * the more space it is played into. With nobody ahead, the ball goes into the space in front of
-   * the carrier. The landing spot always stays on the pitch.
+   * T: ground pass into the space a teammate is running into. A player already on a depth run is
+   * preferred. The ball is weighted to arrive a little slower than that run, and it stops short of
+   * a defender standing in the channel. With nobody ahead, it goes into the space in front of the
+   * carrier. The landing spot always stays on the pitch.
    */
   doThrough(m: Match, p: Player) {
     const team = p.team;
@@ -404,45 +401,43 @@ export class HumanController {
     for (const t of team.players) {
       if (t === p || t.isGK) continue;
       const ahead = (t.x - p.x) * dir;
-      if (ahead < 15 || dist(p.x, p.y, t.x, t.y) > 700) continue;
-      const fwd = t.vx * dir;
+      if (ahead < 15 || dist(p.x, p.y, t.x, t.y) > 720) continue;
+      const running = t.intent === 'run' && t.runTimer > 0;
       let rx: number = dir;
-      let ry = clamp((CY - t.y) / 700, -0.35, 0.35);
-      if (fwd > 40) {
+      let ry = clamp((CY - t.y) / 800, -0.4, 0.4);
+      if (running && (t.tx - t.x) * dir > 30) {
+        rx = t.tx - t.x;
+        ry = t.ty - t.y;
+      } else if (t.vx * dir > 50) {
         rx = t.vx;
         ry = t.vy;
       }
       const rn = Math.hypot(rx, ry) || 1;
       rx /= rn;
       ry /= rn;
-      const runSpeed = Math.max(0, t.vx * rx + t.vy * ry);
-      let tx = t.x;
-      let ty = t.y;
-      let v0 = 0;
-      for (let i = 0; i < 2; i++) {
-        const d = dist(p.x, p.y, tx, ty);
-        v0 = throughSpeed(m.ball.x, m.ball.y, tx, ty);
-        const lead = clamp(runSpeed * groundTime(v0, d) * 0.9, THROUGH_LEAD_MIN, THROUGH_LEAD_MAX);
-        tx = clamp(t.x + rx * lead, 50, PITCH_L - 50);
-        ty = clamp(t.y + ry * lead, 35, PITCH_W - 35);
-      }
-      v0 = throughSpeed(m.ball.x, m.ball.y, tx, ty);
-      const d = dist(p.x, p.y, tx, ty);
-      const risk = laneRisk(team, p.x, p.y, tx, ty, v0, null);
-      const space = clamp(nearestOpponentDist(team, tx, ty) / 140, 0, 1);
-      let s = clamp(ahead / 300, 0, 1) * 0.8 + space * 1.2 - risk * 1.6 + clamp(fwd / 200, 0, 1) * 0.6;
-      if (d > 520) s -= (d - 520) / 300;
+      // A run aimed back toward our own goal is not a through ball.
+      if (rx * dir < 0.35) continue;
+      const fwd = Math.max(0, t.vx * rx + t.vy * ry);
+      const pace = RUN_SPEED * t.speedStat * (running || t.sprint || fwd > 80 ? SPRINT_MULT : 1);
+      const maxLead = channelSpace(team, t.x, t.y, rx, ry);
+      const dose = throughDose(m.ball.x, m.ball.y, t.x, t.y, rx, ry, fwd, pace, maxLead);
+      const d = dist(p.x, p.y, dose.x, dose.y);
+      const risk = laneRisk(team, p.x, p.y, dose.x, dose.y, dose.speed, null);
+      const space = clamp(nearestOpponentDist(team, dose.x, dose.y) / 140, 0, 1);
+      let s = clamp(ahead / 280, 0, 1) * 0.7 + space * 1.1 - risk * 1.5 + clamp(fwd / 220, 0, 1) * 0.45;
+      if (running) s += 1.7;
+      if (d > 560) s -= (d - 560) / 280;
       if (directed) {
-        const cos = ((tx - p.x) * this.moveX + (ty - p.y) * this.moveY) / (d * mag);
-        if (cos < 0.2) continue;
-        s += cos * 1.2;
+        const cos = ((dose.x - p.x) * this.moveX + (dose.y - p.y) * this.moveY) / (d * mag);
+        if (cos < 0.15) continue;
+        s += cos * 1.15;
       }
       if (s > bestS) {
         bestS = s;
         best = t;
-        bx = tx;
-        by = ty;
-        bv = v0;
+        bx = dose.x;
+        by = dose.y;
+        bv = dose.speed;
       }
     }
     const err = 0.028 * (1 + m.pressureOn(p) * 0.8) * passErrorMul();
@@ -457,9 +452,15 @@ export class HumanController {
       dx = this.moveX / mag;
       dy = this.moveY / mag;
     }
-    const tx = clamp(p.x + dx * 200, 50, PITCH_L - 50);
-    const ty = clamp(p.y + dy * 200, 35, PITCH_W - 35);
-    passTo(m, p, tx, ty, { error: err, speed: throughSpeed(m.ball.x, m.ball.y, tx, ty, 150), through: true });
+    const n = Math.hypot(dx, dy) || 1;
+    dx /= n;
+    dy /= n;
+    // No runner: play into the space ahead. The carrier is not the one arriving, so the ball is not
+    // held up for him — it is a firm pass into the pocket, still slow enough to stay on the pitch.
+    const room = channelSpace(team, p.x, p.y, dx, dy);
+    const len = clamp(room * 0.75, Math.min(140, room), Math.min(210, room));
+    const dose = throughDose(m.ball.x, m.ball.y, p.x, p.y, dx, dy, 210, 280, len);
+    passTo(m, p, dose.x, dose.y, { error: err, speed: dose.speed, through: true });
   }
 
   /** Keeper with the ball in hand: PASS = throw to a teammate, long PASS / TIR = punt up the pitch. */
@@ -676,21 +677,6 @@ export function choosePassTarget(p: Player, dx: number, dy: number, minCos: numb
     }
   }
   return best;
-}
-
-/**
- * Launch speed of a through ball to (tx, ty). It reaches its spot a little softer than a pass to
- * feet so the runner can take it in stride, and near a line it arrives slowly enough to stop on the pitch.
- */
-function throughSpeed(ax: number, ay: number, tx: number, ty: number, arrive?: number) {
-  const d = dist(ax, ay, tx, ty) || 1;
-  const ux = (tx - ax) / d;
-  const uy = (ty - ay) / d;
-  const roomX = ux > 0.01 ? (PITCH_L - tx) / ux : ux < -0.01 ? tx / -ux : 1e4;
-  const roomY = uy > 0.01 ? (PITCH_W - ty) / uy : uy < -0.01 ? ty / -uy : 1e4;
-  // Past its spot the ball rolls at most about v / GROUND_K further.
-  const va = Math.min(arrive ?? 200 + d * 0.18, Math.max(20, Math.min(roomX, roomY) - 15) * GROUND_K);
-  return clamp(va + d * PASS_K + (ROLL_DECEL * d) / 380, 50, 900);
 }
 
 /** Aim at the post the keeper is not covering. */

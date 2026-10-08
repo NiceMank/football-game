@@ -3,9 +3,9 @@ import type { Match } from '../game/match';
 import type { Difficulty } from '../game/types';
 
 export const DIFFICULTIES: { value: Difficulty; label: string; desc: string }[] = [
-  { value: 'amateur', label: 'AMATEUR', desc: 'IA lente à réagir, placement approximatif, pressing faible.' },
-  { value: 'pro', label: 'PRO', desc: 'Décisions correctes, pressing intelligent, gardien normal.' },
-  { value: 'legend', label: 'LÉGENDE', desc: 'Anticipation, couverture et circulation de balle de haut niveau.' },
+  { value: 'amateur', label: 'AMATEUR', desc: 'Réactions lentes, marquage lâche, pressing rare.' },
+  { value: 'pro', label: 'PRO', desc: 'Opposition équilibrée : pressing mesuré, des espaces dans le dos.' },
+  { value: 'legend', label: 'LÉGENDE', desc: 'Pressing plus haut et lecture des courses, sans coller au porteur.' },
 ];
 
 const DURATIONS = [3, 5, 8];
