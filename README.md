@@ -72,14 +72,18 @@ Le presseur lit le porteur avec un temps de réaction (lecture rafraîchie toute
 
 ### Difficulté
 
-**Amateur / Pro / Légende** modifie surtout la qualité des décisions (réaction, vision, anticipation, pressing, précision des passes et tirs). La vitesse des joueurs ne change pas et les gardiens restent faillibles à tous les niveaux.
+**Amateur / Pro / Légende** modifie la qualité des décisions (réaction, vision, anticipation, pressing, précision des passes et tirs), pas la vitesse des joueurs. Pro laisse des espaces et presse moins haut qu'avant ; Légende reste plus agressive. Les gardiens restent faillibles à tous les niveaux. Les coéquipiers de l'humain jouent à un niveau fixe, quel que soit le choix.
+
+### Appels et passe en profondeur
+
+Un seul coéquipier (l'attaquant, ou un milieu si l'attaquant a le ballon) part en sprint dans un couloir derrière la ligne, puis se repose brièvement avant de repartir. Les autres proposent une solution courte. `T` vise d'abord ce coureur : le ballon est dosé pour arriver un peu moins vite que sa course, et il s'arrête avant un défenseur placé dans le couloir. Sans appel devant, le ballon part dans l'espace, à une vitesse qui ne le fait pas sortir.
 
 ## Tests
 
 `npm test` exécute :
 
 - `tests/controls.mjs` : mapping clavier (Shift droit, Alt, X, T, C, R = sprint, Entrée, Échap, J/K/L inactifs), passe orientée, passe lobée, passe et tir au glissé, tir chargé, visée des poteaux, crochet, changement de joueur ;
-- `tests/feel.mjs` : défense sans effet « aimant » (distance de marquage, séparation sur un crochet, pas d'essaim), passe assistée (direction, coéquipier proche, ballon qui arrive, interceptions possibles), tir assisté (poteaux, visée partielle, tirs non tous cadrés), assistance défensive (pas de téléportation, tacles non automatiques), niveaux d'assistance, T et R ;
+- `tests/feel.mjs` : défense sans effet « aimant » (distance de marquage, séparation sur un crochet, pas d'essaim), passe assistée (direction, coéquipier proche, ballon qui arrive, interceptions possibles), tir assisté (poteaux, visée partielle, tirs non tous cadrés), assistance défensive (pas de téléportation, tacles non automatiques), niveaux d'assistance, T et R, appels en profondeur, dosage de la passe en profondeur ;
 - `tests/rules.mjs` : but / pas but, barre, sortie de but vs corner, touche, coup franc, penalty, cycle de chaque coup de pied arrêté, règle des 8 secondes ;
 - `tests/goalkeepers.mjs` : statistiques d'arrêts par difficulté (tirs puissants placés, tirs faibles centraux, tirs enroulés) ;
 - `tests/full-match.mjs` : matchs complets IA contre IA et humain contre IA, rythme, variété des plans et des arrêts de jeu, performance.

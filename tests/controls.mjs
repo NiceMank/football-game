@@ -376,7 +376,7 @@ function shotLineY(m) {
   const b = m.ball;
   assert(b.through && b.passTarget === fwd && m.home.controlled === fwd, 'T plays the through ball to the forward running ahead');
   const lead = b.passTargetX - fwd.x;
-  assert(lead > 60 && lead < 190, `the through ball goes into the space ahead of the run, not miles ahead (${lead | 0})`);
+  assert(lead > 70 && lead < 340, `the through ball goes into the space ahead of the run, not miles ahead (${lead | 0})`);
   let got = false;
   for (let i = 0; i < Math.round(3 / FIXED_DT) && !got; i++) {
     step(m, input, 1);

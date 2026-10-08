@@ -69,6 +69,8 @@ export class Team {
   interceptor: Player | null = null;
   /** Defender following the runner a through ball is played to. */
   tracker: Player | null = null;
+  /** Teammate currently asked to make the depth run. */
+  runner: Player | null = null;
   /** Pending defensive reassignment delay (models reaction time). */
   reassignDelay = 0;
   /** Completed passes in this possession that did not gain ground (drives impatience). */
@@ -124,6 +126,7 @@ export class Team {
     this.lostAt = -99;
     this.circulation = 0;
     this.progressMark = 0;
+    this.runner = null;
     for (const p of this.players) {
       p.receivedFrom = null;
       p.stamina = 1;
@@ -133,6 +136,7 @@ export class Team {
       p.tackleCd = 0;
       p.celebrate = 0;
       p.runTimer = 0;
+      p.runCd = 0;
       p.markTarget = null;
       p.vx = p.vy = 0;
       p.gk?.reset();

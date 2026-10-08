@@ -1,5 +1,5 @@
-import { clearBall, groundPassSpeed, groundTime, knockOn, passTo, shoot, slideTackle, tackle } from './actions';
-import { BALL_R, BOX_DEPTH, BOX_HALF, CONTROL_DIST, CY, GOAL_HALF, GRAVITY, PITCH_L, PITCH_W, PLAYER_H, PLAYER_R } from './constants';
+import { channelSpace, clearBall, groundPassSpeed, groundTime, knockOn, passTo, shoot, slideTackle, tackle, throughDose } from './actions';
+import { BALL_R, BOX_DEPTH, BOX_HALF, CONTROL_DIST, CY, GOAL_HALF, GRAVITY, PITCH_L, PITCH_W, PLAYER_H, PLAYER_R, RUN_SPEED, SPRINT_MULT } from './constants';
 import { clamp, dist, distToSegment, gauss, rand, segmentT } from './math';
 import type { Match } from './match';
 import type { Player } from './player';
@@ -81,6 +81,7 @@ export function updateTeamAI(team: Team, m: Match, dt: number) {
     assignRoles(team, m);
   }
   if (team.planTimer <= 0 && m.ball.owner && m.ball.owner.team === team) choosePlan(team, m, false);
+  assignRunner(team, m);
   for (const p of team.players) {
     if (p.isGK) continue;
     if (team.human && p === team.controlled && !m.demo) continue;
@@ -185,7 +186,7 @@ function assignRoles(team: Team, m: Match) {
   }
   if (b.passTarget && b.passTarget.team !== team && b.kind !== 'shot') {
     // Read the pass: only good anticipation lets a player jump the lane.
-    if (best && Math.random() < 0.35 + team.profile.anticipation * 0.6) team.interceptor = best;
+    if (best && Math.random() < 0.14 + team.profile.anticipation * 0.45) team.interceptor = best;
     if (b.through) {
       // The nearest goal-side defender follows the runner.
       const r = b.passTarget;
@@ -239,7 +240,7 @@ function updatePlayerAI(p: Player, team: Team, m: Match, dt: number) {
   }
   if (b.free && b.through && b.passTarget && b.passTarget.team !== team && (team.tracker === p || team.interceptor === p)) {
     // A through ball is not read instantly: first follow the run, then turn and race for the ball.
-    const read = 0.22 + (1 - team.profile.anticipation) * 0.35;
+    const read = 0.36 + (1 - team.profile.anticipation) * 0.4;
     if (b.kickAge < read) {
       trackRun(p, b.passTarget, team);
       return;
@@ -436,7 +437,9 @@ function pressAI(p: Player, c: Player, team: Team, m: Match, dt: number) {
   const db = dist(p.x, p.y, b.x, b.y);
   if (db > PLAYER_R + 20 || p.tackleCd > 0 || b.ownerLock > 0) return;
   const loose = dist(c.x, c.y, b.x, b.y) > PLAYER_R + BALL_R + 5 ? 0.28 : 0;
-  let prob = 0.06 + prof.press * 0.14 + loose + (c.sprint ? 0.08 : 0) + (p.duel === 'press' ? 0.08 : 0);
+  let prob = 0.04 + prof.press * 0.1 + loose * 0.65 + (c.sprint ? 0.06 : 0) + (p.duel === 'press' ? 0.06 : 0);
+  // Running straight into him is still a tackle. A lateral dribble that keeps a gap never gets here.
+  if (db < 36) prob += 0.14;
   if (team.human) prob *= 0.45;
   if (Math.random() < prob) {
     // Going in on a stale read (the carrier just changed direction) is a mistimed tackle.
@@ -459,7 +462,7 @@ function coverAI(p: Player, c: Player, team: Team, m: Match) {
   const ty = pr.y + (toGoalY / dg) * 85 + (CY - pr.y) * 0.15;
   p.steerTo(tx + p.noiseX * 0.5, ty + p.noiseY * 0.5, 1, dist(p.x, p.y, tx, ty) > 140);
   // Second defender steps in when the carrier has beaten the presser.
-  if (team.local(c.x) < team.local(pr.x) - 0.02 && dist(p.x, p.y, c.x, c.y) < 140) {
+  if (team.local(c.x) < team.local(pr.x) - 0.02 && dist(p.x, p.y, c.x, c.y) < 95) {
     team.presser = p;
     team.cover = pr;
   }
@@ -498,12 +501,15 @@ function markAI(p: Player, team: Team, m: Match, dt: number) {
   const dgy = CY - o.y;
   const dg = Math.hypot(dgx, dgy) || 1;
   const danger = 1 - team.local(o.x);
-  const markDist = danger > 0.6 ? 24 : danger > 0.4 ? 40 : 62;
+  // A looser mark leaves a step for a run in behind. Better positioning closes that gap a little.
+  const grip = 0.7 + prof.positioning * 0.45;
+  const markDist = (danger > 0.6 ? 52 : danger > 0.4 ? 74 : 108) / grip;
   let tx = o.x + (dgx / dg) * markDist;
   let ty = o.y + (dgy / dg) * markDist;
-  // Shade toward the ball to cut the passing lane.
-  tx += (b.x - tx) * 0.16;
-  ty += (b.y - ty) * 0.16;
+  // Shade toward the ball to cut the passing lane, without stepping onto the attacker.
+  const shade = 0.05 + prof.anticipation * 0.1;
+  tx += (b.x - tx) * shade;
+  ty += (b.y - ty) * shade;
   // Never be caught deeper-than-necessary when the opponent is far upfield: hold a compact line.
   const maxLocal = team.local(b.x) + 0.08;
   if (team.local(tx) > maxLocal) tx = team.worldX(maxLocal);
@@ -512,17 +518,98 @@ function markAI(p: Player, team: Team, m: Match, dt: number) {
 
 /* --------------------------- Attacking ---------------------------- */
 
+/** One teammate is asked to attack the space behind the defence; the others keep a passing option. */
+function assignRunner(team: Team, m: Match) {
+  const c = m.ball.owner;
+  if (!c || c.team !== team || m.state !== 'live') {
+    team.runner = null;
+    return;
+  }
+  if (team.runner && team.runner !== c && !team.runner.isGK && team.runner.runTimer > 0.2) return;
+  const ballSide = Math.sign(c.y - CY);
+  let best: Player | null = null;
+  let bestS = 0;
+  for (const p of team.players) {
+    if (p === c || p.isGK || p.role === 'DEF' || p.busy || p.runCd > 0) continue;
+    let s = p.role === 'FWD' ? 2.2 : 1;
+    s += (team.local(p.x) - team.local(c.x)) * 1.4;
+    // The mid on the ball side stays close for the layoff. The far one can go.
+    if (p.role === 'MID' && p.flank === ballSide) s -= 0.75;
+    if (s > bestS) {
+      bestS = s;
+      best = p;
+    }
+  }
+  team.runner = best;
+}
+
+/** Pick a channel in behind and sprint into it. The target stays ahead of the runner for the whole call. */
+function launchDepthRun(p: Player, team: Team, c: Player) {
+  const line = oppLastLine(team);
+  const runLocal = clamp(Math.max(line + rand(0.06, 0.11), team.local(p.x) + 0.16), 0.38, 0.92);
+  p.tx = team.worldX(runLocal);
+  p.ty = depthChannel(team, p, c, p.tx);
+  p.runTimer = rand(2.5, 3.5);
+  p.intent = 'run';
+  p.tSprint = true;
+}
+
+/** Keep the run going: the target stays a dozen metres ahead, up to the edge of the box. */
+function extendDepthRun(p: Player, team: Team) {
+  const line = oppLastLine(team);
+  const want = clamp(Math.max(line + 0.05, team.local(p.x) + 0.1), 0.4, 0.92);
+  const tx = team.worldX(want);
+  if ((tx - p.tx) * team.dir > 15) p.tx = tx;
+}
+
+function depthChannel(team: Team, p: Player, c: Player, x: number) {
+  let best = p.y;
+  let bestS = -1e9;
+  for (const y0 of [140, 280, CY, PITCH_W - 280, PITCH_W - 140]) {
+    const open = nearestOpponentDist(team, x, y0);
+    const s = open * 1.25 - Math.abs(y0 - p.y) * 0.1 - (Math.abs(y0 - c.y) < 75 ? 40 : 0);
+    if (s > bestS) {
+      bestS = s;
+      best = y0;
+    }
+  }
+  return clamp(best, 70, PITCH_W - 70);
+}
+
 function supportAI(p: Player, team: Team, m: Match, dt: number) {
   const prof = team.profile;
   const b = m.ball;
   const c = b.owner;
   p.think -= dt;
+  if (p.runCd > 0) p.runCd -= dt;
   if (p.runTimer > 0) {
-    p.runTimer -= dt;
-    p.intent = 'run';
-    p.steerTo(p.tx, p.ty, 1, true, 16);
-    if (dist(p.x, p.y, p.tx, p.ty) < 18) p.runTimer = 0;
-    return;
+    const carrier = c && c.team === team ? c : null;
+    const stale = carrier && (p.x - carrier.x) * team.dir < -20 && (p.tx - carrier.x) * team.dir < 30;
+    if (stale) {
+      p.runTimer = 0;
+      p.runCd = 0.25;
+    } else {
+      p.runTimer -= dt;
+      p.intent = 'run';
+      if (p === team.runner) extendDepthRun(p, team);
+      p.steerTo(p.tx, p.ty, 1, true, 26);
+      if (p.runTimer <= 0) p.runCd = team.human ? rand(0.4, 0.7) : rand(0.9, 1.4);
+      return;
+    }
+  }
+  if (c && c.team === team && p === team.runner && p.runCd <= 0 && p !== c) {
+    const line = oppLastLine(team);
+    const possessed = m.time - team.wonAt;
+    const room = line < 0.9 && team.local(p.x) < Math.min(0.86, line + 0.07);
+    // The human's teammates go as soon as the ball is settled. Opponents do it less often.
+    const go = team.human
+      ? possessed > (team.plan === 'counter' ? 0.1 : 0.32)
+      : p.think <= 0 && possessed > 0.4 && Math.random() < (team.plan === 'counter' ? 0.7 : team.plan === 'direct' ? 0.42 : 0.22) * (0.5 + prof.vision);
+    if (room && go) {
+      launchDepthRun(p, team, c);
+      p.steerTo(p.tx, p.ty, 1, true, 26);
+      return;
+    }
   }
   if (p.think > 0) {
     p.steerTo(p.tx, p.ty, 1, p.tSprint, 22);
@@ -534,23 +621,6 @@ function supportAI(p: Player, team: Team, m: Match, dt: number) {
   const baseY = slot.y;
   const cx = c ? c.x : b.x;
   const cy = c ? c.y : b.y;
-
-  // Runs in behind / into space when the carrier can play forward.
-  if (c && c !== p && (p.role === 'FWD' || p.role === 'MID' && p.flank !== Math.sign(cy - CY))) {
-    const facingFwd = Math.cos(c.facing) * team.dir > 0.3;
-    const pressure = m.pressureOn(c);
-    const runChance = (team.plan === 'counter' ? 0.75 : team.plan === 'direct' ? 0.5 : 0.25) * prof.vision;
-    if (facingFwd && pressure < 0.6 && team.local(p.x) > team.local(cx) - 0.05 && Math.random() < runChance) {
-      const line = oppLastLine(team);
-      const runLocal = clamp(Math.max(line + 0.08, team.local(p.x) + 0.14), 0.3, 0.93);
-      p.tx = team.worldX(runLocal);
-      p.ty = clamp(p.y + rand(-90, 90) + (CY - p.y) * 0.3, 70, PITCH_W - 70);
-      p.runTimer = rand(1.2, 1.9);
-      p.intent = 'run';
-      p.tSprint = true;
-      return;
-    }
-  }
 
   // Sample candidate spots around the role slot and keep the most useful free space.
   let bestX = baseX;
@@ -572,7 +642,9 @@ function supportAI(p: Player, team: Team, m: Match, dt: number) {
     const dc = dist(x, y, cx, cy);
     const distPen = dc < 90 ? (90 - dc) / 90 : dc > 430 ? (dc - 430) / 300 : 0;
     const drift = dist(x, y, baseX, baseY) / 220;
-    const s = open * 0.9 + lane * 0.8 + sep * 0.6 - distPen * 0.8 - drift * 0.5 + team.local(x) * 0.25;
+    let s = open * 0.9 + lane * 0.8 + sep * 0.6 - distPen * 0.8 - drift * 0.5 + team.local(x) * 0.25;
+    // While someone attacks the space, a midfielder offers a short option instead of joining the run.
+    if (team.runner && team.runner !== p && team.runner.runTimer > 0 && p.role === 'MID' && p.flank === Math.sign(cy - CY)) s -= Math.abs(dc - 160) / 420;
     if (s > bestS) {
       bestS = s;
       bestX = x;
@@ -632,7 +704,8 @@ export function laneRisk(team: Team, ax: number, ay: number, bx: number, by: num
   for (const o of team.opp.players) {
     if (o === ignore) continue;
     const t = segmentT(o.x, o.y, ax, ay, bx, by);
-    if (t <= 0) continue;
+    // Only someone on the pass itself can cut it out. A keeper beyond the landing spot is not in the lane.
+    if (t <= 0.02 || t >= 0.97) continue;
     const qx = ax + (bx - ax) * t;
     const qy = ay + (by - ay) * t;
     const dq = dist(o.x, o.y, qx, qy);
@@ -795,6 +868,32 @@ function carrierAI(p: Player, team: Team, m: Match, dt: number) {
   }
 }
 
+/** Release a teammate who is already on a depth run, weighted the same way as the human's T. */
+function playThrough(p: Player, team: Team, m: Match, pressure: number) {
+  const r = team.runner;
+  if (!r || r === p || r.runTimer < 0.45 || r.intent !== 'run') return false;
+  const dir = team.dir;
+  if ((r.x - p.x) * dir < 20 || pressure > 0.8) return false;
+  let rx = r.tx - r.x;
+  let ry = r.ty - r.y;
+  const rn = Math.hypot(rx, ry) || 1;
+  rx /= rn;
+  ry /= rn;
+  if (rx * dir < 0.4) return false;
+  const fwd = Math.max(0, r.vx * rx + r.vy * ry);
+  const pace = RUN_SPEED * r.speedStat * SPRINT_MULT;
+  const dose = throughDose(m.ball.x, m.ball.y, r.x, r.y, rx, ry, fwd, pace, channelSpace(team, r.x, r.y, rx, ry));
+  const risk = laneRisk(team, p.x, p.y, dose.x, dose.y, dose.speed, null);
+  if (risk > 0.62) return false;
+  // Teammates look for the run. Opponents play it less often, so a run is not a free chance.
+  const eager = team.human ? 0.7 : 0.28 + team.profile.vision * 0.28;
+  if (Math.random() > eager * (1 - risk * 0.35)) return false;
+  const err = team.profile.passError * (1 + pressure * 0.8) * (1.35 - p.passStat * 0.5);
+  passTo(m, p, dose.x, dose.y, { target: r, error: err, speed: dose.speed, through: true });
+  p.holdTimer = 0;
+  return true;
+}
+
 /** Returns true when the ball has been released. */
 function decide(p: Player, team: Team, m: Match, pressure: number): boolean {
   const prof = team.profile;
@@ -807,13 +906,15 @@ function decide(p: Player, team: Team, m: Match, pressure: number): boolean {
   const q = shotQuality(p, m);
   const aimY = shotAim.y;
   const shootThreshold = (plan === 'build' ? 0.42 : plan === 'wing' ? 0.38 : 0.33) - prof.noise * 0.25 * Math.random();
-  if (q > shootThreshold) {
+  if (q > shootThreshold + (team.human ? 0 : 0.06)) {
     const power = clamp(0.62 + Math.random() * 0.35 + (team.local(p.x) < 0.75 ? 0.08 : 0), 0, 1);
     const finesse = q > 0.5 && Math.random() < 0.3;
     const side = Math.random() < 0.8 ? aimY : CY + (CY - aimY);
     shoot(m, p, side + rand(-8, 8), power, { finesse, error: prof.shotError });
     return true;
   }
+
+  if (playThrough(p, team, m, pressure)) return true;
 
   // Deep in our own box under heavy pressure: no risk.
   if (team.local(p.x) < 0.14 && Math.abs(p.y - CY) < BOX_HALF && pressure > 0.65) {
